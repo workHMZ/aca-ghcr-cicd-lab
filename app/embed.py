@@ -1,66 +1,50 @@
 """
-Embedding service for text vectorization
+Embedding service for text vectorization using sentence-transformers.
+Uses all-MiniLM-L6-v2 model (~80MB) - runs locally, no API costs.
+Vector dimension: 384
 """
 
-import os
-from typing import List
-from openai import AzureOpenAI
+from sentence_transformers import SentenceTransformer
+
+# Load model once at module level for efficiency
+# First run will auto-download (~80MB), cached locally afterward
+model = SentenceTransformer('all-MiniLM-L6-v2')
 
 
-class EmbeddingService:
-    """Service for generating text embeddings using Azure OpenAI"""
+def embed_text(text: str) -> list[float]:
+    """
+    Generate semantic embedding vector for text.
     
-    def __init__(self):
-        """Initialize the Azure OpenAI client"""
-        self.client = AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
-        )
-        self.model = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
+    Model: all-MiniLM-L6-v2
+    Dimension: 384
     
-    def embed_text(self, text: str) -> List[float]:
-        """
-        Generate embedding for a single text
+    Args:
+        text: Input text to embed
         
-        Args:
-            text: Input text to embed
-        
-        Returns:
-            List of floats representing the embedding vector
-        """
-        response = self.client.embeddings.create(
-            input=text,
-            model=self.model
-        )
-        return response.data[0].embedding
+    Returns:
+        List of floats representing the embedding vector
+    """
+    if not text:
+        return []
+    # convert to list for JSON serialization
+    return model.encode(text).tolist()
+
+
+def embed_batch(texts: list[str]) -> list[list[float]]:
+    """
+    Generate embeddings for multiple texts.
     
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings for multiple texts
+    Args:
+        texts: List of input texts to embed
         
-        Args:
-            texts: List of input texts to embed
-        
-        Returns:
-            List of embedding vectors
-        """
-        response = self.client.embeddings.create(
-            input=texts,
-            model=self.model
-        )
-        return [item.embedding for item in response.data]
-    
-    def is_available(self) -> bool:
-        """
-        Check if the embedding service is available
-        
-        Returns:
-            True if service is configured and accessible
-        """
-        try:
-            # Test with a simple embedding
-            self.embed_text("test")
-            return True
-        except Exception:
-            return False
+    Returns:
+        List of embedding vectors
+    """
+    if not texts:
+        return []
+    return model.encode(texts).tolist()
+
+
+def get_dimension() -> int:
+    """Return embedding vector dimension."""
+    return 384
