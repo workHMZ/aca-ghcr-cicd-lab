@@ -15,3 +15,6 @@ numpy==1.26.4
 
 # Document Processing
 pypdf==4.3.1
+
+# OpenAI
+openai

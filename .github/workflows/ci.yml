@@ -44,7 +44,7 @@ jobs:
           # 使用小写后的名字
           images: ${{ steps.meta-prep.outputs.lowercase_image }}
           tags: |
-            type=sha
+            type=sha,format=short,prefix=sha-
             type=raw,value=latest
 
       - name: Build and push Docker image
@@ -54,3 +54,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

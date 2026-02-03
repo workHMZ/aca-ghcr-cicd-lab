@@ -8,10 +8,14 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from azure.search.documents.models import VectorizedQuery
+from openai import OpenAI
 from app.embed import embed_text, get_dimension
 from app.search_client import get_search_client
 
 load_dotenv(override=True)
+
+# Initialize OpenAI client
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI(
     title="Serverless RAG API",
@@ -99,7 +103,38 @@ def query(req: QueryRequest):
             content=r.get("content"),
         ))
     
-    # Mock answer (integrate real LLM in next phase)
-    mock_answer = f"基于检索到的 {len(contexts)} 个片段，我分析如下... (这里是 Mock 回答)"
-    
-    return QueryResponse(answer=mock_answer, contexts=contexts)
+    # 5. Generate answer using OpenAI gpt-5-mini
+    if not contexts:
+        answer = "抱歉，未能检索到相关信息来回答您的问题。"
+    else:
+        # Build context string from retrieved documents
+        context_text = "\n\n".join([
+            f"[来源: {ctx.source or 'unknown'}]\n{ctx.content}" 
+            for ctx in contexts
+        ])
+        
+        # Create prompt for RAG
+        system_prompt = """你是一个专业的问答助手。请根据提供的上下文信息来回答用户的问题。
+如果上下文中没有足够的信息来回答问题，请诚实地说明。没有就说我不知道。
+回答时请尽量准确、简洁，并引用相关来源。"""
+        
+        user_prompt = f"""上下文信息：
+{context_text}
+
+用户问题：{req.question}
+
+请基于上述上下文信息回答问题。"""
+
+        try:
+            resp = openai_client.responses.create(
+                model="gpt-5-mini",
+                instructions=system_prompt,
+                input=user_prompt,
+                max_output_tokens=1024,
+                reasoning={"effort": "low"},
+            )
+            answer = resp.output_text
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"OpenAI API call failed: {str(e)}")
+
+    return QueryResponse(answer=answer, contexts=contexts)
