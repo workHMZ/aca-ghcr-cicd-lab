@@ -16,7 +16,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   AZURE_CONTAINER_APP_NAME: serverless-rag-api
-  AZURE_RESOURCE_GROUP: rg-rag-student
+  AZURE_RESOURCE_GROUP: rg-genai-student-jp
 
 jobs:
   deploy:
