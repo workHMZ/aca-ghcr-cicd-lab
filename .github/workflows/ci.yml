@@ -3,18 +3,10 @@ name: CI - Build and Push to GHCR
 on:
   push:
     branches: [main]
-    paths:
-      - 'app/**'
-      - 'requirements.txt'
-      - 'Dockerfile'
-      - '.github/workflows/ci.yml'
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
@@ -31,39 +23,34 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare Lowercase Image Name
+        id: meta-prep
+        run: |
+          # 强制转小写
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}"
+          LOWER_IMAGE=$(echo "$FULL_IMAGE" | tr '[:upper:]' '[:lower:]')
+          echo "lowercase_image=$LOWER_IMAGE" >> $GITHUB_OUTPUT
+
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # 使用小写后的名字
+          images: ${{ steps.meta-prep.outputs.lowercase_image }}
           tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+            type=raw,value=latest
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Output image info
-        if: github.event_name != 'pull_request'
-        run: |
-          echo "### 🐳 Docker Image Published" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
-          echo '${{ steps.meta.outputs.tags }}' | tr ',' '\n' | while read tag; do
-            echo "- \`$tag\`" >> $GITHUB_STEP_SUMMARY
-          done

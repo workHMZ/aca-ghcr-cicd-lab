@@ -6,51 +6,51 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: 'Docker image tag to deploy (default: latest)'
-        required: false
-        default: 'latest'
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
   AZURE_CONTAINER_APP_NAME: serverless-rag-api
   AZURE_RESOURCE_GROUP: rg-genai-student-jp
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Only run if CI succeeded (for workflow_run trigger)
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     
     steps:
-      - name: Determine image tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
-          else
-            # Use the SHA from the workflow run
-            echo "tag=${{ github.event.workflow_run.head_sha }}" >> $GITHUB_OUTPUT
-          fi
-
       - name: Log in to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Prepare Lowercase Image Name
+        id: image-prep
+        run: |
+          # 获取正确的 SHA (workflow_dispatch 用 github.sha)
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            TAG="latest"
+          else
+            # workflow_run 触发时使用触发它的 CI 的 head_sha
+            SHA="${{ github.event.workflow_run.head_sha }}"
+            # SHA 取前7位作为 tag (和 CI 的 type=sha 一致)
+            TAG="sha-${SHA:0:7}"
+          fi
+          
+          # 拼接并强制转为全小写
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}"
+          LOWER_IMAGE=$(echo "$FULL_IMAGE" | tr '[:upper:]' '[:lower:]')
+          
+          echo "image_url=$LOWER_IMAGE:$TAG" >> $GITHUB_OUTPUT
+          echo "🐳 Using image: $LOWER_IMAGE:$TAG"
 
       - name: Deploy to Azure Container Apps
         uses: azure/container-apps-deploy-action@v1
         with:
           resourceGroup: ${{ env.AZURE_RESOURCE_GROUP }}
           containerAppName: ${{ env.AZURE_CONTAINER_APP_NAME }}
-          imageToDeploy: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
-
+          imageToDeploy: ${{ steps.image-prep.outputs.image_url }}
+          
       - name: Output deployment info
         run: |
           echo "### 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Container App:** \`${{ env.AZURE_CONTAINER_APP_NAME }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Resource Group:** \`${{ env.AZURE_RESOURCE_GROUP }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ steps.image-prep.outputs.image_url }}\`" >> $GITHUB_STEP_SUMMARY
