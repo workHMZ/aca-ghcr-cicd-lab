@@ -76,16 +76,8 @@ def test_health() -> bool:
 
 
 def test_query(question: str = "什么是 RAG？", top_k: int = 3) -> bool:
-    """Test the query endpoint with authentication."""
+    """Test the query endpoint (with optional authentication)."""
     token = _get_token()
-    if not token:
-        print("\n❌ Error: AZURE_ACCESS_TOKEN not set in environment")
-        print("   Example:")
-        print('   export AZURE_ACCESS_TOKEN="$(az account get-access-token \\')
-        print('     --scope \\"api://c99022ac-edba-4f2f-aec1-6a8a3e408bb0/.default\\" \\')
-        print('     --query accessToken -o tsv)"')
-        return False
-
     headers = _auth_headers(token)
     data = {"question": question, "top_k": top_k}
 
