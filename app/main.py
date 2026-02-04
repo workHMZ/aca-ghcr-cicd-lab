@@ -128,12 +128,10 @@ def query(req: QueryRequest):
         try:
             resp = openai_client.responses.create(
                 model="gpt-5-mini",
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.7,
-                max_completion_tokens=1024,
+                instructions=system_prompt,
+                input=user_prompt,
+                max_output_tokens=1024,
+                reasoning={"effort": "low"},
             )
             answer = resp.output_text
         except Exception as e:
