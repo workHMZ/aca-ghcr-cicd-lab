@@ -133,7 +133,7 @@ def query(req: QueryRequest):
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.7,
-                max_tokens=1024
+                max_completion_tokens=1024  # gpt-5-mini requires this instead of max_tokens
             )
             answer = completion.choices[0].message.content
         except Exception as e:
