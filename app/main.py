@@ -1,89 +1,105 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional
+"""
+Serverless RAG API - FastAPI application with Azure AI Search integration.
+Uses local sentence-transformers for embedding (no API costs).
+"""
+
 import os
 from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from azure.search.documents.models import VectorizedQuery
+from app.embed import embed_text, get_dimension
+from app.search_client import get_search_client
 
-from app.embed import EmbeddingService
-from app.search_client import SearchClient
-
-# Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 app = FastAPI(
     title="Serverless RAG API",
-    description="Retrieval-Augmented Generation API using Azure AI Search",
+    description="RAG API using Azure AI Search with local sentence-transformers embedding",
     version="0.1.0"
 )
 
-# Initialize services
-embedding_service = EmbeddingService()
-search_client = SearchClient()
-
 
 class QueryRequest(BaseModel):
-    query: str
-    top_k: Optional[int] = 5
+    question: str = Field(..., min_length=1, description="Question to search for")
+    top_k: int = Field(3, ge=1, le=10, description="Number of results to return")
+
+
+class ContextHit(BaseModel):
+    id: str
+    source: str | None = None
+    score: float | None = None
+    content: str
 
 
 class QueryResponse(BaseModel):
     answer: str
-    sources: List[dict]
+    contexts: list[ContextHit]
 
 
 @app.get("/")
-async def root():
-    """Health check endpoint"""
+def root():
+    """Root endpoint with service info."""
     return {
-        "status": "healthy",
         "service": "Serverless RAG API",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "embedding_model": "all-MiniLM-L6-v2",
+        "embedding_dimension": get_dimension()
     }
-
-
-@app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
-    """
-    Query the RAG system
-    
-    Args:
-        request: QueryRequest with query string and optional top_k parameter
-    
-    Returns:
-        QueryResponse with answer and sources
-    """
-    try:
-        # Generate query embedding
-        query_embedding = embedding_service.embed_text(request.query)
-        
-        # Search for relevant documents
-        search_results = search_client.search(
-            query_embedding=query_embedding,
-            top_k=request.top_k
-        )
-        
-        # Generate answer using retrieved context
-        answer = search_client.generate_answer(
-            query=request.query,
-            search_results=search_results
-        )
-        
-        return QueryResponse(
-            answer=answer,
-            sources=search_results
-        )
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
-async def health():
-    """Detailed health check"""
-    return {
-        "status": "healthy",
-        "services": {
-            "embedding": embedding_service.is_available(),
-            "search": search_client.is_available()
-        }
-    }
+def health():
+    """Health check endpoint."""
+    return {"status": "ok", "service": "azure-rag-student"}
+
+
+@app.post("/query", response_model=QueryResponse)
+def query(req: QueryRequest):
+    """
+    Query the RAG system using hybrid search (vector + keyword).
+    
+    Args:
+        req: QueryRequest with question and top_k parameters
+        
+    Returns:
+        QueryResponse with mock answer and retrieved contexts
+    """
+    # 1. Generate query vector using local embedding
+    qvec = embed_text(req.question)
+    
+    # 2. Construct vector query for Azure AI Search
+    vector_query = VectorizedQuery(
+        vector=qvec,
+        k_nearest_neighbors=req.top_k,
+        fields="contentVector",
+        exhaustive=True  # For small datasets, ensures best recall
+    )
+    
+    search_client = get_search_client()
+    
+    # 3. Execute hybrid search (Vector + Keyword)
+    try:
+        results = search_client.search(
+            search_text=req.question,  # Enables hybrid search
+            vector_queries=[vector_query],
+            top=req.top_k,
+            select=["id", "content", "source", "createdAt"]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+    
+    # 4. Format results
+    contexts = []
+    for r in results:
+        contexts.append(ContextHit(
+            id=r.get("id"),
+            source=r.get("source"),
+            score=r.get("@search.score"),
+            content=r.get("content"),
+        ))
+    
+    # Mock answer (integrate real LLM in next phase)
+    mock_answer = f"基于检索到的 {len(contexts)} 个片段，我分析如下... (这里是 Mock 回答)"
+    
+    return QueryResponse(answer=mock_answer, contexts=contexts)

@@ -1,97 +1,94 @@
 """
-Script to create Azure AI Search index
+Script to create Azure AI Search index with vector search support.
+Uses 384-dimensional vectors (matching sentence-transformers all-MiniLM-L6-v2).
 """
 
 import os
+import sys
+# Add parent directory to sys.path to import app modules
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from dotenv import load_dotenv
+from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
-    SearchIndex,
-    SimpleField,
-    SearchableField,
-    SearchField,
-    VectorSearch,
-    VectorSearchProfile,
-    HnswAlgorithmConfiguration,
-    SearchFieldDataType
+    SearchIndex, SearchField, SearchFieldDataType,
+    SearchableField, SimpleField, VectorSearch,
+    VectorSearchProfile, HnswAlgorithmConfiguration
 )
-from azure.core.credentials import AzureKeyCredential
-from dotenv import load_dotenv
+from app.embed import get_dimension
 
-# Load environment variables
-load_dotenv()
+load_dotenv(override=True)
+
+endpoint = os.environ["AZURE_SEARCH_ENDPOINT"]
+index_name = os.environ["AZURE_SEARCH_INDEX_NAME"]
+api_key = os.environ["AZURE_SEARCH_API_KEY"]
 
 
-def create_search_index():
-    """Create the search index with vector search capabilities"""
-    
-    # Initialize the index client
-    index_client = SearchIndexClient(
-        endpoint=os.getenv("AZURE_SEARCH_ENDPOINT"),
-        credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_API_KEY"))
+def create_index():
+    """Create Azure AI Search index with hybrid search (vector + keyword) support."""
+    client = SearchIndexClient(
+        endpoint=endpoint,
+        credential=AzureKeyCredential(api_key)
     )
-    
-    index_name = os.getenv("AZURE_SEARCH_INDEX_NAME")
-    
-    # Define the index schema
+    dim = get_dimension()  # 384 for all-MiniLM-L6-v2
+
+    # Define fields
     fields = [
         SimpleField(
             name="id",
             type=SearchFieldDataType.String,
-            key=True,
-            filterable=True
+            key=True
         ),
         SearchableField(
             name="content",
             type=SearchFieldDataType.String,
-            searchable=True
-        ),
-        SearchableField(
-            name="title",
-            type=SearchFieldDataType.String,
-            searchable=True,
-            filterable=True
+            analyzer_name="zh-Hans.microsoft"  # Chinese analyzer - interview bonus!
         ),
         SearchField(
-            name="content_vector",
+            name="contentVector",
             type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-            vector_search_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", 1536)),
+            searchable=True,
+            vector_search_dimensions=dim,  # Must be 384
             vector_search_profile_name="my-vector-profile"
         ),
-        SimpleField(
-            name="metadata",
+        SearchableField(
+            name="source",
             type=SearchFieldDataType.String,
             filterable=True
+        ),
+        SimpleField(
+            name="createdAt",
+            type=SearchFieldDataType.String
         )
     ]
-    
-    # Configure vector search
+
+    # Configure vector search algorithm (HNSW)
     vector_search = VectorSearch(
+        algorithms=[
+            HnswAlgorithmConfiguration(
+                name="my-hnsw-config",
+                kind="hnsw"
+            )
+        ],
         profiles=[
             VectorSearchProfile(
                 name="my-vector-profile",
                 algorithm_configuration_name="my-hnsw-config"
             )
-        ],
-        algorithms=[
-            HnswAlgorithmConfiguration(name="my-hnsw-config")
         ]
     )
-    
-    # Create the index
+
     index = SearchIndex(
         name=index_name,
         fields=fields,
         vector_search=vector_search
     )
-    
-    try:
-        result = index_client.create_or_update_index(index)
-        print(f"✓ Index '{result.name}' created successfully!")
-        return result
-    except Exception as e:
-        print(f"✗ Error creating index: {e}")
-        raise
+
+    print(f"Creating index '{index_name}' with dimension {dim}...")
+    client.create_or_update_index(index)
+    print("✅ Index created successfully!")
 
 
 if __name__ == "__main__":
-    create_search_index()
+    create_index()
