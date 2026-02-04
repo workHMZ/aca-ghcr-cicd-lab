@@ -126,16 +126,16 @@ def query(req: QueryRequest):
 请基于上述上下文信息回答问题。"""
 
         try:
-            completion = openai_client.chat.completions.create(
+            resp = openai_client.responses.create(
                 model="gpt-5-mini",
-                messages=[
+                input=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.7,
-                max_completion_tokens=1024  # gpt-5-mini requires this instead of max_tokens
+                max_completion_tokens=1024,
             )
-            answer = completion.choices[0].message.content
+            answer = resp.output_text
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"OpenAI API call failed: {str(e)}")
 
