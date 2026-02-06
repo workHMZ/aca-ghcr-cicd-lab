@@ -142,16 +142,59 @@ jobs:
           check_health() {
             local url="$1"
             local timeout="${2:-10}"
+            local attempts="${3:-24}"
             echo "🔍 Testing: $url"
-            for i in {1..12}; do
+            for i in $(seq 1 "$attempts"); do
               if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
                 echo "✅ Health check passed!"
                 return 0
               fi
-              echo "⏳ Waiting for service to be ready ($i/12)..."
+              echo "⏳ Waiting for service to be ready ($i/$attempts)..."
               sleep 10
             done
-            echo "❌ Health check failed after 2 minutes."
+            local total=$((attempts * 10))
+            echo "❌ Health check failed after ${total}s."
+            return 1
+          }
+
+          # ============================================================
+          # Warmup function (load embedding model)
+          # 预热函数（加载 embedding 模型）
+          # ============================================================
+          warmup_model() {
+            local url="$1"
+            local timeout="${2:-300}"
+            local attempts="${3:-2}"
+            echo "🔥 Warming up: $url"
+            for i in $(seq 1 "$attempts"); do
+              if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
+                echo "✅ Warmup completed."
+                return 0
+              fi
+              echo "⚠️ Warmup failed ($i/$attempts). Retrying..."
+              sleep 10
+            done
+            echo "❌ Warmup failed after $attempts attempts."
+            return 1
+          }
+
+          # ============================================================
+          # Traffic verification with retries
+          # 流量验证（带重试）
+          # ============================================================
+          verify_traffic() {
+            local rev="$1"
+            local expected="${2:-100}"
+            local attempts="${3:-6}"
+            for i in $(seq 1 "$attempts"); do
+              CURRENT_WEIGHT=$(az containerapp ingress traffic show -g "$RG" -n "$APP" \
+                --query "sum(traffic[?revisionName=='$rev'].weight)" -o tsv 2>/dev/null || echo "0")
+              if [ "$CURRENT_WEIGHT" = "$expected" ]; then
+                return 0
+              fi
+              echo "⏳ Verifying traffic... ($i/$attempts) current=$CURRENT_WEIGHT expected=$expected"
+              sleep 5
+            done
             return 1
           }
 
@@ -188,10 +231,8 @@ jobs:
             # Verify traffic switch succeeded
             # 验证流量切换是否成功
             echo "🔍 Verifying traffic switch..."
-            CURRENT_WEIGHT=$(az containerapp ingress traffic show -g "$RG" -n "$APP" \
-              --query "sum(traffic[?revisionName=='$STABLE_REV'].weight)" -o tsv 2>/dev/null || echo "0")
-            if [ "$CURRENT_WEIGHT" != "100" ]; then
-              echo "❌ Verification Failed: Stable revision only has $CURRENT_WEIGHT% traffic."
+            if ! verify_traffic "$STABLE_REV" 100 8; then
+              echo "❌ Verification Failed: Stable revision did not reach 100% traffic."
               exit 1
             else
               echo "✅ Verification Passed: Traffic is 100% on stable revision."
@@ -251,8 +292,12 @@ jobs:
             run_with_retry az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
             echo "⏳ Waiting for container to start (15s)..."
             sleep 15
-            if ! check_health "$MAIN_URL" 15; then
+            if ! check_health "$MAIN_URL" 15 24; then
               echo "❌ First deployment failed health check."
+              exit 1
+            fi
+            if ! warmup_model "${MAIN_URL%/health}/warmup" 300 2; then
+              echo "❌ Warmup failed on first deployment."
               exit 1
             fi
             echo "🎉 First deployment success!"
@@ -278,25 +323,26 @@ jobs:
           echo "🧪 Smoke testing via label URL (0% production traffic)..."
           echo "⏳ Waiting for container to start (15s)..."
           sleep 15
-          if ! check_health "$CANARY_URL" 15; then rollback; fi
+          if ! check_health "$CANARY_URL" 15 24; then rollback; fi
+          if ! warmup_model "${CANARY_URL%/health}/warmup" 300 2; then rollback; fi
 
           # Stage 1: 10% | 阶段1: 10%流量
           echo "🐤 Shifting 10% traffic to new revision..."
           run_with_retry az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=90" "$NEW_REV=10"
           sleep 10
-          if ! check_health "$CANARY_URL"; then rollback; fi
+          if ! check_health "$CANARY_URL" 10 24; then rollback; fi
 
           # Stage 2: 50% | 阶段2: 50%流量
           echo "⚖️ Shifting 50% traffic..."
           run_with_retry az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=50" "$NEW_REV=50"
           sleep 10
-          if ! check_health "$CANARY_URL"; then rollback; fi
+          if ! check_health "$CANARY_URL" 10 24; then rollback; fi
 
           # Stage 3: 100% | 阶段3: 100%全量
           echo "🚀 Promoting to 100% traffic..."
           run_with_retry az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
           sleep 5
-          if ! check_health "$MAIN_URL"; then rollback; fi
+          if ! check_health "$MAIN_URL" 10 24; then rollback; fi
 
           # Deactivate old revision (save resources) | 停用旧版本（节省资源）
           echo "💤 Deactivating old stable revision $STABLE_REV..."

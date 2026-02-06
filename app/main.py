@@ -88,6 +88,15 @@ def health():
         "env": ENV_NAME,
     }
 
+@app.get("/warmup")
+def warmup():
+    """Warm up the embedding model so the first /query is fast."""
+    try:
+        _ = embed_text("warmup")
+        return {"status": "ok", "embedding_dimension": get_dimension()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Warmup failed: {str(e)}")
+
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
     """
