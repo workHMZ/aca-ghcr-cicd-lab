@@ -1,4 +1,4 @@
-name: CI - Build and Push to GHCR
+name: CI - Build Scan SBOM Sign Push to GHCR
 
 on:
   push:
@@ -9,15 +9,35 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-and-push:
+  build-scan-sign-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write        # push GHCR
+      id-token: write        # cosign OIDC keyless
+    outputs:
+      image_repo: ${{ steps.meta-prep.outputs.image_repo }}
+      image_tag: ${{ steps.tag.outputs.image_tag }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Prepare lowercase image repo
+        id: meta-prep
+        run: |
+          IMAGE_REPO="${{ env.REGISTRY }}/${{ github.repository }}"
+          IMAGE_REPO_LOWER=$(echo "$IMAGE_REPO" | tr '[:upper:]' '[:lower:]')
+          echo "image_repo=$IMAGE_REPO_LOWER" >> $GITHUB_OUTPUT
+          echo "Using image repo: $IMAGE_REPO_LOWER"
+
+      # tag 统一：sha-xxxxxxx
+      - name: Prepare tag
+        id: tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "image_tag=sha-$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "Using tag: sha-$SHORT_SHA"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -29,30 +49,86 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare Lowercase Image Name
-        id: meta-prep
-        run: |
-          # 强制转小写
-          FULL_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}"
-          LOWER_IMAGE=$(echo "$FULL_IMAGE" | tr '[:upper:]' '[:lower:]')
-          echo "lowercase_image=$LOWER_IMAGE" >> $GITHUB_OUTPUT
-
-      - name: Extract metadata (tags, labels)
-        id: meta
-        uses: docker/metadata-action@v5
+      # 1) Build 本地镜像（给 Trivy 扫描用，不 push）
+      - name: Build image locally for scanning
+        uses: docker/build-push-action@v6
         with:
-          # 使用小写后的名字
-          images: ${{ steps.meta-prep.outputs.lowercase_image }}
+          context: .
+          push: false
+          load: true
           tags: |
-            type=sha,format=short,prefix=sha-
-            type=raw,value=latest
+            ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            IMAGE_TAG=${{ steps.tag.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
+      # 2) Trivy 镜像漏洞 gate（HIGH/CRITICAL 直接失败）
+      - name: Trivy image scan (gate)
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+          format: table
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # 3) Gate 通过后再 push（sha-xxxxxxx + latest）
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+            ${{ steps.meta-prep.outputs.image_repo }}:latest
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            IMAGE_TAG=${{ steps.tag.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 4) 生成 SBOM（CycloneDX JSON）
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM (CycloneDX JSON)
+        run: |
+          syft ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }} -o cyclonedx-json > sbom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.tag.outputs.image_tag }}
+          path: sbom.cdx.json
+
+      # 5) Cosign OIDC keyless 签名 + 附加 SBOM attestation
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.8.2
+
+      - name: Cosign sign image (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign sign --yes ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+
+      - name: Cosign attach SBOM attestation
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign attest --yes \
+            --predicate sbom.cdx.json \
+            --type cyclonedx \
+            ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+
+      - name: Summary
+        run: |
+          echo "### ✅ CI Completed" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Also tagged:** \`latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Trivy gate:** HIGH/CRITICAL blocked" >> $GITHUB_STEP_SUMMARY
+          echo "**SBOM:** sbom.cdx.json uploaded" >> $GITHUB_STEP_SUMMARY
+          echo "**Cosign:** image signed + SBOM attested (OIDC keyless)" >> $GITHUB_STEP_SUMMARY

@@ -1,56 +1,225 @@
-name: CD - Deploy to Azure Container Apps
+name: CD - Canary Deploy to Azure Container Apps
 
 on:
   workflow_run:
-    workflows: ["CI - Build and Push to GHCR"]
-    types: [completed]
+    workflows: ["CI - Build Scan SBOM Sign Push to GHCR"]
+    types:
+      - completed
     branches: [main]
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  AZURE_CONTAINER_APP_NAME: serverless-rag-api
   AZURE_RESOURCE_GROUP: rg-genai-student-jp
+  AZURE_CONTAINER_APP_NAME: serverless-rag-api
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    
+
     steps:
       - name: Log in to Azure
-        uses: azure/login@v2
+        uses: azure/login@v2.3.0
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Prepare Lowercase Image Name
+      - name: Prepare image url
         id: image-prep
+        shell: bash
         run: |
-          # 获取正确的 SHA (workflow_dispatch 用 github.sha)
+          set -euo pipefail
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}"
+          LOWER_IMAGE=$(echo "$FULL_IMAGE" | tr '[:upper:]' '[:lower:]')
+
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             TAG="latest"
           else
-            # workflow_run 触发时使用触发它的 CI 的 head_sha
             SHA="${{ github.event.workflow_run.head_sha }}"
-            # SHA 取前7位作为 tag (和 CI 的 type=sha 一致)
             TAG="sha-${SHA:0:7}"
           fi
-          
-          # 拼接并强制转为全小写
-          FULL_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}"
-          LOWER_IMAGE=$(echo "$FULL_IMAGE" | tr '[:upper:]' '[:lower:]')
-          
+
           echo "image_url=$LOWER_IMAGE:$TAG" >> $GITHUB_OUTPUT
           echo "🐳 Using image: $LOWER_IMAGE:$TAG"
 
+      # 1) 强制开启多版本模式（否则无法金丝雀/回滚）
+      - name: Ensure Multiple Revisions mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          az extension add --name containerapp --upgrade
+          az containerapp update \
+            -g "${{ env.AZURE_RESOURCE_GROUP }}" \
+            -n "${{ env.AZURE_CONTAINER_APP_NAME }}" \
+            --revisions-mode multiple
+
+      # 2) 部署新版（会创建新 revision）
       - name: Deploy to Azure Container Apps
-        uses: azure/container-apps-deploy-action@v1
+        uses: azure/container-apps-deploy-action@v2
         with:
           resourceGroup: ${{ env.AZURE_RESOURCE_GROUP }}
           containerAppName: ${{ env.AZURE_CONTAINER_APP_NAME }}
           imageToDeploy: ${{ steps.image-prep.outputs.image_url }}
-          
-      - name: Output deployment info
+          registryUrl: ${{ env.REGISTRY }}
+          registryUsername: ${{ github.actor }}
+          registryPassword: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3) Canary：label 直连测活(0%) -> 10% -> 50% -> 100% + 自动回滚
+      - name: Canary rollout logic
+        shell: bash
         run: |
-          echo "### 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          set -euo pipefail
+
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          APP="${{ env.AZURE_CONTAINER_APP_NAME }}"
+
+          echo "🔍 Resolving FQDN..."
+          FQDN=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.ingress.fqdn" -o tsv)
+          if [ -z "$FQDN" ] || [ "$FQDN" = "None" ]; then
+            echo "❌ Ingress FQDN not found. Ensure External Ingress is enabled in ACA."
+            exit 1
+          fi
+
+          # 最新部署的 revision（按 createdTime 排序取最新）
+          NEW_REV=$(az containerapp revision list -g "$RG" -n "$APP" \
+            --query "sort_by([].{name:name, created:properties.createdTime}, &created)[-1].name" -o tsv)
+
+          if [ -z "$NEW_REV" ] || [ "$NEW_REV" = "None" ]; then
+            echo "❌ Failed to resolve NEW_REV."
+            exit 1
+          fi
+
+          # 当前稳定版：trafficWeight > 0 且最大（可能为空：首次部署）
+          STABLE_REV=$(az containerapp revision list -g "$RG" -n "$APP" \
+            --query "sort_by([?properties.trafficWeight!=null && properties.trafficWeight>`0`].{name:name, w:properties.trafficWeight}, &w)[-1].name" -o tsv || true)
+
+          echo "🆕 New Revision: $NEW_REV"
+          echo "🛡️ Stable Revision: ${STABLE_REV:-<none>}"
+
+          # label URL（推荐用 label 前置：canary---<FQDN>）
+          CANARY_URL="https://canary---${FQDN}/health"
+          MAIN_URL="https://${FQDN}/health"
+
+          echo "🩺 Canary URL: $CANARY_URL"
+          echo "🩺 Main URL:   $MAIN_URL"
+
+          check_health() {
+            local url="$1"
+            local timeout="${2:-10}"
+            echo "🔍 Testing: $url"
+            for i in {1..12}; do
+              if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
+                echo "✅ Health check passed!"
+                return 0
+              fi
+              echo "⏳ Waiting for service to be ready ($i/12)..."
+              sleep 10
+            done
+            echo "❌ Health check failed after 2 minutes."
+            return 1
+          }
+
+          rollback() {
+            if [ -z "${STABLE_REV:-}" ] || [ "$STABLE_REV" = "None" ]; then
+              echo "🚨 No stable revision to rollback to (likely first deployment)."
+              exit 1
+            fi
+            echo "🚨 Rolling back 100% traffic to $STABLE_REV"
+            az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=100"
+            echo "💤 Deactivating failed new revision $NEW_REV (best-effort)"
+            az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$NEW_REV" || true
+            exit 1
+          }
+
+          # === 首次部署或无法识别稳定版 ===
+          if [ -z "${STABLE_REV:-}" ] || [ "$STABLE_REV" = "None" ] || [ "$NEW_REV" = "$STABLE_REV" ]; then
+            echo "⚠️ First deployment (or no stable revision). Route 100% to NEW_REV and health check main URL."
+            az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
+            echo "⏳ Waiting for container to start (15s)..."
+            sleep 15
+            if ! check_health "$MAIN_URL" 15; then
+              echo "❌ First deployment failed health check."
+              exit 1
+            fi
+            echo "🎉 First deployment success!"
+            exit 0
+          fi
+
+          # === Canary 部署流程 ===
+
+          # 移除旧 canary label（不依赖 list 字段结构）
+          echo "🏷️ Removing any existing 'canary' label (best-effort)..."
+          az containerapp revision label remove --name "$APP" --resource-group "$RG" --label canary || true
+
+          # 给新版本打上 canary label
+          echo "🏷️ Assigning 'canary' label to $NEW_REV..."
+          az containerapp revision label add \
+            --name "$APP" \
+            --resource-group "$RG" \
+            --revision "$NEW_REV" \
+            --label canary
+
+          # 阶段 0：0% 冒烟测试（label 直连，避免流量稀释）
+          echo "🧪 Smoke testing via label URL (0% production traffic)..."
+          echo "⏳ Waiting for container to start (15s)..."
+          sleep 15
+          if ! check_health "$CANARY_URL" 15; then rollback; fi
+
+          # 阶段 1：10%
+          echo "🐤 Shifting 10% traffic to new revision..."
+          az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=90" "$NEW_REV=10"
+          echo "⏳ Waiting for traffic to propagate (10s)..."
+          sleep 10
+          if ! check_health "$CANARY_URL"; then rollback; fi
+
+          # 阶段 2：50%
+          echo "⚖️ Shifting 50% traffic..."
+          az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=50" "$NEW_REV=50"
+          echo "⏳ Waiting for traffic to propagate (10s)..."
+          sleep 10
+          if ! check_health "$CANARY_URL"; then rollback; fi
+
+          # 阶段 3：100%
+          echo "🚀 Promoting to 100% traffic..."
+          az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
+          echo "⏳ Waiting for traffic to propagate (5s)..."
+          sleep 5
+          if ! check_health "$MAIN_URL"; then rollback; fi
+
+          # 可选：停用旧版本（节省资源）
+          echo "💤 Deactivating old stable revision $STABLE_REV (optional)..."
+          az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$STABLE_REV" || true
+
+          echo "🎉 Canary Deployment Success!"
+          echo "📊 Final state:"
+          echo "  - New revision: $NEW_REV (100% traffic)"
+          echo "  - Old revision: $STABLE_REV (deactivated)"
+          echo "  - Canary URL: $CANARY_URL"
+          echo "  - Production URL: $MAIN_URL"
+
+      - name: Deployment Summary
+        if: success()
+        shell: bash
+        run: |
+          echo "### ✅ CD Completed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Resource Group:** \`${{ env.AZURE_RESOURCE_GROUP }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Container App:** \`${{ env.AZURE_CONTAINER_APP_NAME }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** \`${{ steps.image-prep.outputs.image_url }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment Strategy:** Canary (0% smoke → 10% → 50% → 100%)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 **Production URL:** https://${{ env.AZURE_CONTAINER_APP_NAME }}.<your-aca-env-domain>/health" >> $GITHUB_STEP_SUMMARY
+
+      - name: Deployment Failed Summary
+        if: failure()
+        shell: bash
+        run: |
+          echo "### ❌ CD Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Resource Group:** \`${{ env.AZURE_RESOURCE_GROUP }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Container App:** \`${{ env.AZURE_CONTAINER_APP_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ steps.image-prep.outputs.image_url }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Deployment failed. Check logs for details." >> $GITHUB_STEP_SUMMARY
+          echo "🔄 Traffic should have been rolled back to the stable revision (if existed)." >> $GITHUB_STEP_SUMMARY

@@ -21,6 +21,12 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
+# Build-time version info (injected by CI)
+ARG BUILD_SHA=unknown
+ARG IMAGE_TAG=unknown
+ENV BUILD_SHA=$BUILD_SHA
+ENV IMAGE_TAG=$IMAGE_TAG
+
 # Copy application code
 COPY app/ ./app/
 

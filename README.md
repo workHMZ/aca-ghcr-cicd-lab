@@ -1,6 +1,6 @@
 # Serverless RAG API
 
-[English](#english) | [中文](#中文)
+[English](#english) | [中文](#中文) | [日本語](#日本語)
 
 ---
 
@@ -17,6 +17,8 @@ A serverless RAG (Retrieval-Augmented Generation) API built with FastAPI, Azure 
 - 📦 **Containerized** – Multi-stage Docker build, deploys to Azure Container Apps
 - 💰 **Student-Friendly** – Avoids costly services (ACR, Azure OpenAI)
 - 🔄 **Full CI/CD** – GitHub Actions → GHCR → Azure Container Apps
+- 🔒 **Security Scanning** – Trivy scans for image + dependency vulnerabilities (PR gate)
+- 🐦 **Canary Deployment** – Progressive rollout (0% → 10% → 50% → 100%) with auto-rollback
 
 ### 🚀 Quick Start
 
@@ -96,8 +98,9 @@ CI builds and pushes to GHCR, CD deploys to Azure Container Apps automatically.
 │   ├── test_api.py       # API testing script
 │   └── setup-azure.sh    # Azure infrastructure setup
 ├── .github/workflows/
-│   ├── ci.yml            # Build → GHCR
-│   └── cd.yml            # Deploy → Azure Container Apps
+│   ├── ci.yml            # Build → Trivy → SBOM → Cosign → GHCR
+│   ├── cd.yml            # Canary Deploy → Azure Container Apps
+│   └── security.yml      # Trivy security scan (PR gate)
 ├── data/                 # Documents directory
 ├── Dockerfile            # Multi-stage build
 └── requirements.txt
@@ -107,13 +110,13 @@ CI builds and pushes to GHCR, CD deploys to Azure Container Apps automatically.
 
 | Component | Technology |
 |-----------|------------|
-| Framework | FastAPI 0.115.0 |
+| Framework | FastAPI 0.99.1 |
 | Embedding | sentence-transformers (all-MiniLM-L6-v2, 384-dim) |
 | Search | Azure AI Search (Free Tier) |
 | LLM | OpenAI GPT-5-mini (Responses API) |
 | Container | Docker + GHCR |
-| Deployment | Azure Container Apps |
-| CI/CD | GitHub Actions |
+| Deployment | Azure Container Apps (Canary) |
+| CI/CD | GitHub Actions + Trivy + Cosign |
 
 ---
 
@@ -130,6 +133,8 @@ CI builds and pushes to GHCR, CD deploys to Azure Container Apps automatically.
 - 📦 **容器化部署** – 多阶段 Docker 构建，部署到 Azure Container Apps
 - 💰 **学生友好** – 避开高成本服务（ACR、Azure OpenAI）
 - 🔄 **完整 CI/CD** – GitHub Actions → GHCR → Azure Container Apps
+- 🔒 **安全扫描** – Trivy 镜像 + 依赖漏洞扫描（PR 门禁）
+- 🐦 **金丝雀部署** – 渐进式发布（0% → 10% → 50% → 100%）+ 自动回滚
 
 ### 🚀 快速开始
 
@@ -209,8 +214,9 @@ CI 自动构建镜像推送到 GHCR，CD 自动部署到 Azure Container Apps。
 │   ├── test_api.py       # API 测试脚本
 │   └── setup-azure.sh    # Azure 基础设施创建脚本
 ├── .github/workflows/
-│   ├── ci.yml            # 构建 → GHCR
-│   └── cd.yml            # 部署 → Azure Container Apps
+│   ├── ci.yml            # 构建 → Trivy → SBOM → Cosign → GHCR
+│   ├── cd.yml            # 金丝雀部署 → Azure Container Apps
+│   └── security.yml      # Trivy 安全扫描（PR 门禁）
 ├── data/                 # 文档目录
 ├── Dockerfile            # 多阶段构建
 └── requirements.txt
@@ -220,16 +226,133 @@ CI 自动构建镜像推送到 GHCR，CD 自动部署到 Azure Container Apps。
 
 | 组件 | 技术 |
 |------|------|
-| 框架 | FastAPI 0.115.0 |
+| 框架 | FastAPI 0.99.1 |
 | 向量化 | sentence-transformers (all-MiniLM-L6-v2, 384 维) |
 | 检索 | Azure AI Search (Free Tier) |
 | 大模型 | OpenAI GPT-5-mini (Responses API) |
 | 容器 | Docker + GHCR |
-| 部署 | Azure Container Apps |
-| CI/CD | GitHub Actions |
+| 部署 | Azure Container Apps（金丝雀） |
+| CI/CD | GitHub Actions + Trivy + Cosign |
+
+---
+
+<a id="日本語"></a>
+## 🇯🇵 日本語
+
+FastAPI、Azure AI Search、OpenAI を使用したサーバーレス RAG（検索拡張生成）API。API コストを削減するためにローカルの sentence-transformers を使用したベクトル化と、GitHub Actions による Azure Container Apps への完全な CI/CD パイプラインを実装しています。
+
+### ✨ 特徴
+
+- 🔍 **ハイブリッド検索** – ベクトル検索 + キーワード検索で最適な検索結果
+- 🧠 **ローカル Embedding** – `all-MiniLM-L6-v2`（384次元）を使用、API コストゼロ
+- 🤖 **GPT-5-mini 回答生成** – OpenAI Responses API による回答生成
+- 📦 **コンテナ化** – マルチステージ Docker ビルド、Azure Container Apps にデプロイ
+- 💰 **学生向け** – 高コストサービス（ACR、Azure OpenAI）を回避
+- 🔄 **完全な CI/CD** – GitHub Actions → GHCR → Azure Container Apps
+- 🔒 **セキュリティスキャン** – Trivy によるイメージ + 依存関係の脆弱性スキャン（PR ゲート）
+- 🐦 **カナリアデプロイ** – 段階的リリース（0% → 10% → 50% → 100%）+ 自動ロールバック
+
+### 🚀 クイックスタート
+
+#### 1. 依存関係のインストール
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+#### 2. 環境変数の設定
+
+```bash
+cp .env.example .env
+# Azure Search エンドポイント、API キー、OpenAI API キーを入力
+```
+
+#### 3. インデックス作成とデータ取り込み
+
+```bash
+python scripts/create_index.py
+python scripts/ingest.py  # まず data/ ディレクトリにドキュメントを配置
+```
+
+#### 4. ローカル実行
+
+```bash
+uvicorn app.main:app --reload
+# http://127.0.0.1:8000/docs にアクセス
+```
+
+### 🔄 CI/CD デプロイメント
+
+#### 前提条件
+
+- Azure サブスクリプション（学生サブスクリプション可）
+- GitHub リポジトリ
+
+#### Step 1: Azure リソースの作成
+
+```bash
+./scripts/setup-azure.sh
+```
+
+このスクリプトで作成されるもの：リソースグループ、Container Apps 環境、Container App、Service Principal
+
+#### Step 2: GitHub Secrets の設定
+
+**Settings → Secrets and variables → Actions** で以下を追加：
+
+| Secret 名 | 説明 |
+|----------|------|
+| `AZURE_CREDENTIALS` | setup-azure.sh の出力 JSON |
+| `AZURE_SEARCH_ENDPOINT` | Azure AI Search エンドポイント |
+| `AZURE_SEARCH_API_KEY` | Azure AI Search API キー |
+| `AZURE_SEARCH_INDEX_NAME` | インデックス名 |
+| `OPENAI_API_KEY` | OpenAI API キー |
+
+#### Step 3: プッシュしてデプロイ
+
+```bash
+git push origin main
+```
+
+CI が自動でイメージをビルドして GHCR にプッシュし、CD が Azure Container Apps に自動デプロイします。
+
+### 📁 プロジェクト構造
+
+```
+├── app/
+│   ├── main.py           # FastAPI アプリケーション
+│   ├── embed.py          # sentence-transformers（384次元）
+│   └── search_client.py  # Azure AI Search クライアント
+├── scripts/
+│   ├── create_index.py   # 検索インデックス作成
+│   ├── ingest.py         # ドキュメント取り込み
+│   ├── test_api.py       # API テストスクリプト
+│   └── setup-azure.sh    # Azure インフラ構築スクリプト
+├── .github/workflows/
+│   ├── ci.yml            # ビルド → Trivy → SBOM → Cosign → GHCR
+│   ├── cd.yml            # カナリアデプロイ → Azure Container Apps
+│   └── security.yml      # Trivy セキュリティスキャン（PR ゲート）
+├── data/                 # ドキュメントディレクトリ
+├── Dockerfile            # マルチステージビルド
+└── requirements.txt
+```
+
+### 🛠 技術スタック
+
+| コンポーネント | 技術 |
+|--------------|------|
+| フレームワーク | FastAPI 0.99.1 |
+| ベクトル化 | sentence-transformers (all-MiniLM-L6-v2, 384次元) |
+| 検索 | Azure AI Search（Free Tier） |
+| LLM | OpenAI GPT-5-mini (Responses API) |
+| コンテナ | Docker + GHCR |
+| デプロイ | Azure Container Apps（カナリア） |
+| CI/CD | GitHub Actions + Trivy + Cosign |
 
 ---
 
 ## 📄 License
 
 [Apache-2.0](LICENSE)
+
