@@ -19,8 +19,19 @@ load_dotenv(override=True)
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 BUILD_SHA = os.getenv("BUILD_SHA", "unknown")
 IMAGE_TAG = os.getenv("IMAGE_TAG", "unknown")
-ENV_NAME = os.getenv("ENV_NAME", "unknown")  # optional: dev/stg/prod
+ENV_NAME = os.getenv("ENV_NAME", "stg")  # optional: dev/stg/prod
 SERVICE_NAME = os.getenv("SERVICE_NAME", "azure-rag-student")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+OPENAI_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "1024"))
+OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "medium")
+OPENAI_VERBOSITY = os.getenv("OPENAI_VERBOSITY", "medium")
+
+_REASONING_EFFORT_ALLOWED = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_VERBOSITY_ALLOWED = {"low", "medium", "high"}
+
+def _normalize_choice(value: str, allowed: set[str], default: str) -> str:
+    cleaned = (value or "").strip().lower()
+    return cleaned if cleaned in allowed else default
 
 def get_openai_client() -> OpenAI:
     """
@@ -123,16 +134,19 @@ def query(req: QueryRequest):
         answer = "抱歉，未能检索到相关信息来回答您的问题。"
     else:
         context_text = "\n\n".join(
-            [f"[来源: {ctx.source or 'unknown'}]\n{ctx.content}" for ctx in contexts]
+            [
+                f"[{i + 1}] 来源: {ctx.source or 'unknown'}\n{ctx.content}"
+                for i, ctx in enumerate(contexts)
+            ]
         )
 
         system_prompt = (
-            "你是一个专业的问答助手。请根据提供的上下文信息来回答用户的问题。\n"
-            "如果上下文中没有足够的信息来回答问题，请诚实地说明。没有就说我不知道。\n"
-            "回答时请尽量准确、简洁，并引用相关来源。"
+            "你是一个专业的问答助手。只根据提供的上下文信息回答问题，禁止编造。\n"
+            "如果上下文不足以回答，请直接说“我不知道”，或提出一个最关键的追问。\n"
+            "回答要求：先给结论，再给要点；引用来源用编号，如 [1]、[2]。"
         )
 
-        user_prompt = f"""上下文信息：
+        user_prompt = f"""上下文信息（已编号）：
 {context_text}
 
 用户问题：{req.question}
@@ -141,13 +155,25 @@ def query(req: QueryRequest):
 
         try:
             openai_client = get_openai_client()
-            resp = openai_client.responses.create(
-                model="gpt-5-mini",
-                instructions=system_prompt,
-                input=user_prompt,
-                max_output_tokens=1024,
-                reasoning={"effort": "low"},
+            reasoning_effort = _normalize_choice(
+                OPENAI_REASONING_EFFORT, _REASONING_EFFORT_ALLOWED, "medium"
             )
+            verbosity = _normalize_choice(
+                OPENAI_VERBOSITY, _VERBOSITY_ALLOWED, "medium"
+            )
+
+            request = {
+                "model": OPENAI_MODEL,
+                "instructions": system_prompt,
+                "input": user_prompt,
+                "max_output_tokens": OPENAI_MAX_OUTPUT_TOKENS,
+            }
+
+            if OPENAI_MODEL.startswith("gpt-5"):
+                request["reasoning"] = {"effort": reasoning_effort}
+                request["text"] = {"verbosity": verbosity}
+
+            resp = openai_client.responses.create(**request)
             answer = resp.output_text
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"OpenAI API call failed: {str(e)}")

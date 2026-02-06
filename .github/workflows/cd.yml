@@ -58,6 +58,24 @@ jobs:
           echo "image_url=$LOWER_IMAGE:$TAG" >> $GITHUB_OUTPUT
           echo "🐳 Using image: $LOWER_IMAGE:$TAG"
 
+      # Resolve GHCR credentials | 解析 GHCR 凭据
+      # NOTE: GITHUB_TOKEN is short-lived. For private GHCR images, use PAT.
+      # 注意：GITHUB_TOKEN 是短期 token，私有 GHCR 建议使用 PAT
+      - name: Resolve GHCR credentials
+        id: ghcr-creds
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.GHCR_USERNAME }}" ] && [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
+            echo "username=${{ secrets.GHCR_USERNAME }}" >> $GITHUB_OUTPUT
+            echo "token=${{ secrets.GHCR_TOKEN }}" >> $GITHUB_OUTPUT
+            echo "✅ Using GHCR_USERNAME/GHCR_TOKEN."
+          else
+            echo "username=${{ github.actor }}" >> $GITHUB_OUTPUT
+            echo "token=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_OUTPUT
+            echo "⚠️ GHCR_USERNAME/GHCR_TOKEN not set; using GITHUB_TOKEN."
+            echo "⚠️ If GHCR image is private, pulls may fail after token expires."
+          fi
+
       # ========== Step 1: Enable multiple revisions ==========
       # 步骤1: 启用多版本模式（金丝雀部署和回滚的前提条件）
       - name: Ensure Multiple Revisions mode
@@ -79,16 +97,14 @@ jobs:
           containerAppName: ${{ env.AZURE_CONTAINER_APP_NAME }}
           imageToDeploy: ${{ steps.image-prep.outputs.image_url }}
           registryUrl: ${{ env.REGISTRY }}
-          registryUsername: ${{ github.actor }}
-          registryPassword: ${{ secrets.GITHUB_TOKEN }}
+          registryUsername: ${{ steps.ghcr-creds.outputs.username }}
+          registryPassword: ${{ steps.ghcr-creds.outputs.token }}
 
-      # ========== Step 3: Canary rollout ==========
-      # 步骤3: 金丝雀发布流程
-      #   - 0%: Label直连测活（不影响生产流量）
-      #   - 10%: 小规模验证
-      #   - 50%: 扩大范围
-      #   - 100%: 全量切换
-      #   - 任何阶段健康检查失败则自动回滚
+      # ========== Step 3: Canary rollout with robustness ==========
+      # 步骤3: 金丝雀发布流程（增强鲁棒性）
+      #   - 重试机制: Azure CLI 网络抖动时自动重试
+      #   - 防御性编程: 回滚时关闭 set -e 确保执行完整
+      #   - 状态校验: 执行后二次确认流量切换成功
       - name: Canary rollout logic
         shell: bash
         run: |
@@ -96,6 +112,105 @@ jobs:
 
           RG="${{ env.AZURE_RESOURCE_GROUP }}"
           APP="${{ env.AZURE_CONTAINER_APP_NAME }}"
+
+          # ============================================================
+          # Retry function - handles Azure CLI network flakiness
+          # 重试函数 - 处理 Azure CLI 网络抖动
+          # ============================================================
+          run_with_retry() {
+            local n=1
+            local max=5
+            local delay=10
+            while true; do
+              "$@" && break || {
+                if [[ $n -lt $max ]]; then
+                  ((n++))
+                  echo "⚠️ Command failed. Attempt $n/$max..."
+                  sleep $delay
+                else
+                  echo "❌ Command failed after $max attempts."
+                  return 1
+                fi
+              }
+            done
+          }
+
+          # ============================================================
+          # Health check function
+          # 健康检查函数
+          # ============================================================
+          check_health() {
+            local url="$1"
+            local timeout="${2:-10}"
+            echo "🔍 Testing: $url"
+            for i in {1..12}; do
+              if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
+                echo "✅ Health check passed!"
+                return 0
+              fi
+              echo "⏳ Waiting for service to be ready ($i/12)..."
+              sleep 10
+            done
+            echo "❌ Health check failed after 2 minutes."
+            return 1
+          }
+
+          # ============================================================
+          # Rollback function with defensive programming
+          # 回滚函数 - 防御性编程，确保回滚过程不被中断
+          # ============================================================
+          rollback() {
+            echo "🚨 INITIALIZING ROLLBACK PROCEDURE..."
+            
+            # Disable set -e to ensure rollback completes
+            # 关闭 set -e 确保回滚流程完整执行
+            set +e
+            
+            if [ -z "${STABLE_REV:-}" ] || [ "$STABLE_REV" = "None" ]; then
+              echo "💣 CRITICAL: No stable revision found. Cannot rollback."
+              exit 1
+            fi
+
+            echo "🔙 Rolling back 100% traffic to $STABLE_REV..."
+            
+            # Use retry mechanism for critical traffic switch
+            # 使用重试机制确保流量切换成功
+            run_with_retry az containerapp ingress traffic set \
+              -g "$RG" -n "$APP" \
+              --revision-weight "$STABLE_REV=100"
+              
+            if [ $? -ne 0 ]; then
+              echo "☠️ FATAL: Failed to switch traffic back to stable revision!"
+              echo "   Manual intervention required immediately!"
+              exit 1
+            fi
+
+            # Verify traffic switch succeeded
+            # 验证流量切换是否成功
+            echo "🔍 Verifying traffic switch..."
+            CURRENT_WEIGHT=$(az containerapp ingress traffic show -g "$RG" -n "$APP" \
+              --query "sum(traffic[?revisionName=='$STABLE_REV'].weight)" -o tsv 2>/dev/null || echo "0")
+            if [ "$CURRENT_WEIGHT" != "100" ]; then
+              echo "❌ Verification Failed: Stable revision only has $CURRENT_WEIGHT% traffic."
+              exit 1
+            else
+              echo "✅ Verification Passed: Traffic is 100% on stable revision."
+            fi
+
+            # Deactivate failed revision (non-critical, use || true)
+            # 停用失败版本（非关键步骤，失败不阻塞）
+            echo "💤 Deactivating failed new revision $NEW_REV..."
+            az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$NEW_REV" 2>/dev/null || \
+              echo "⚠️ Warning: Failed to deactivate bad revision, but traffic is safe."
+
+            echo "✅ Rollback procedure completed."
+            exit 1
+          }
+
+          # ============================================================
+          # Main deployment logic
+          # 主部署逻辑
+          # ============================================================
 
           echo "🔍 Resolving FQDN..."
           FQDN=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.ingress.fqdn" -o tsv)
@@ -129,41 +244,11 @@ jobs:
           echo "🩺 Canary URL: $CANARY_URL"
           echo "🩺 Main URL:   $MAIN_URL"
 
-          # Health check function | 健康检查函数
-          check_health() {
-            local url="$1"
-            local timeout="${2:-10}"
-            echo "🔍 Testing: $url"
-            for i in {1..12}; do
-              if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
-                echo "✅ Health check passed!"
-                return 0
-              fi
-              echo "⏳ Waiting for service to be ready ($i/12)..."
-              sleep 10
-            done
-            echo "❌ Health check failed after 2 minutes."
-            return 1
-          }
-
-          # Rollback function | 回滚函数
-          rollback() {
-            if [ -z "${STABLE_REV:-}" ] || [ "$STABLE_REV" = "None" ]; then
-              echo "🚨 No stable revision to rollback to (likely first deployment)."
-              exit 1
-            fi
-            echo "🚨 Rolling back 100% traffic to $STABLE_REV"
-            az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=100"
-            echo "💤 Deactivating failed new revision $NEW_REV (best-effort)"
-            az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$NEW_REV" || true
-            exit 1
-          }
-
           # === First deployment (no stable revision) ===
           # === 首次部署（无稳定版本）===
           if [ -z "${STABLE_REV:-}" ] || [ "$STABLE_REV" = "None" ] || [ "$NEW_REV" = "$STABLE_REV" ]; then
-            echo "⚠️ First deployment (or no stable revision). Route 100% to NEW_REV and health check main URL."
-            az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
+            echo "⚠️ First deployment (or no stable revision). Route 100% to NEW_REV."
+            run_with_retry az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
             echo "⏳ Waiting for container to start (15s)..."
             sleep 15
             if ! check_health "$MAIN_URL" 15; then
@@ -178,12 +263,12 @@ jobs:
           # === 金丝雀部署流程 ===
 
           # Remove old canary label | 移除旧的canary标签
-          echo "🏷️ Removing any existing 'canary' label (best-effort)..."
-          az containerapp revision label remove --name "$APP" --resource-group "$RG" --label canary || true
+          echo "🏷️ Removing any existing 'canary' label..."
+          az containerapp revision label remove --name "$APP" --resource-group "$RG" --label canary 2>/dev/null || true
 
           # Add canary label to new revision | 给新版本打上canary标签
           echo "🏷️ Assigning 'canary' label to $NEW_REV..."
-          az containerapp revision label add \
+          run_with_retry az containerapp revision label add \
             --name "$APP" \
             --resource-group "$RG" \
             --revision "$NEW_REV" \
@@ -197,35 +282,30 @@ jobs:
 
           # Stage 1: 10% | 阶段1: 10%流量
           echo "🐤 Shifting 10% traffic to new revision..."
-          az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=90" "$NEW_REV=10"
-          echo "⏳ Waiting for traffic to propagate (10s)..."
+          run_with_retry az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=90" "$NEW_REV=10"
           sleep 10
           if ! check_health "$CANARY_URL"; then rollback; fi
 
           # Stage 2: 50% | 阶段2: 50%流量
           echo "⚖️ Shifting 50% traffic..."
-          az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=50" "$NEW_REV=50"
-          echo "⏳ Waiting for traffic to propagate (10s)..."
+          run_with_retry az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=50" "$NEW_REV=50"
           sleep 10
           if ! check_health "$CANARY_URL"; then rollback; fi
 
           # Stage 3: 100% | 阶段3: 100%全量
           echo "🚀 Promoting to 100% traffic..."
-          az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
-          echo "⏳ Waiting for traffic to propagate (5s)..."
+          run_with_retry az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
           sleep 5
           if ! check_health "$MAIN_URL"; then rollback; fi
 
           # Deactivate old revision (save resources) | 停用旧版本（节省资源）
-          echo "💤 Deactivating old stable revision $STABLE_REV (optional)..."
-          az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$STABLE_REV" || true
+          echo "💤 Deactivating old stable revision $STABLE_REV..."
+          az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$STABLE_REV" 2>/dev/null || true
 
           echo "🎉 Canary Deployment Success!"
           echo "📊 Final state:"
           echo "  - New revision: $NEW_REV (100% traffic)"
           echo "  - Old revision: $STABLE_REV (deactivated)"
-          echo "  - Canary URL: $CANARY_URL"
-          echo "  - Production URL: $MAIN_URL"
 
       # ========== Summary ==========
       - name: Deployment Summary
@@ -240,6 +320,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Deployment Strategy:** Canary (0% smoke → 10% → 50% → 100%)" >> $GITHUB_STEP_SUMMARY
           echo "**部署策略:** 金丝雀 (0%冒烟 → 10% → 50% → 100%)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Robustness Features | 鲁棒性特性:**" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Retry mechanism (5 attempts) | 重试机制" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Defensive rollback (set +e) | 防御性回滚" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Traffic verification | 流量验证" >> $GITHUB_STEP_SUMMARY
 
       - name: Deployment Failed Summary
         if: failure()
@@ -253,5 +338,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⚠️ Deployment failed. Check logs for details." >> $GITHUB_STEP_SUMMARY
           echo "⚠️ 部署失败，请查看日志了解详情。" >> $GITHUB_STEP_SUMMARY
-          echo "🔄 Traffic should have been rolled back to the stable revision (if existed)." >> $GITHUB_STEP_SUMMARY
-          echo "🔄 流量已自动回滚到稳定版本（如果存在）。" >> $GITHUB_STEP_SUMMARY
+          echo "🔄 Traffic should have been rolled back to the stable revision." >> $GITHUB_STEP_SUMMARY
+          echo "🔄 流量已自动回滚到稳定版本。" >> $GITHUB_STEP_SUMMARY

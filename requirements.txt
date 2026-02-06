@@ -18,4 +18,4 @@ numpy==1.26.4
 pypdf==6.6.2
 
 # OpenAI
-openai==1.63.2
+openai==2.17.0
