@@ -1,5 +1,5 @@
 # Multi-stage build for efficient container
-FROM python:3.12-slim as builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
@@ -21,11 +21,22 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
+# Build-time version info (injected by CI)
+ARG BUILD_SHA=unknown
+ARG IMAGE_TAG=unknown
+ENV BUILD_SHA=$BUILD_SHA
+ENV IMAGE_TAG=$IMAGE_TAG
+
 # Copy application code
 COPY app/ ./app/
 
 # Pre-download the embedding model during build (cache it in image)
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+ARG PRELOAD_EMBEDDING_MODEL=1
+RUN if [ "$PRELOAD_EMBEDDING_MODEL" = "1" ]; then \
+      python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"; \
+    else \
+      echo "Skipping embedding model preload (PRELOAD_EMBEDDING_MODEL=$PRELOAD_EMBEDDING_MODEL)"; \
+    fi
 
 # Expose port
 EXPOSE 8000
