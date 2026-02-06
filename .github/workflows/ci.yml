@@ -1,8 +1,23 @@
+# ============================================================================
+# CI - Build, Scan, SBOM, Sign, Push to GHCR
+# CI流水线 - 构建、扫描、生成SBOM、签名、推送到GHCR
+# ============================================================================
+# Trigger: push to main (only for code/config changes, not docs)
+# 触发条件: 推送到main分支（仅限代码/配置变更，不包括文档）
+# ============================================================================
+
 name: CI - Build Scan SBOM Sign Push to GHCR
 
 on:
   push:
     branches: [main]
+    paths:
+      # Only trigger on code/config changes (忽略文档和workflow变更)
+      - 'app/**'
+      - 'scripts/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - '.env.example'
   workflow_dispatch:
 
 env:
@@ -13,8 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write        # push GHCR
-      id-token: write        # cosign OIDC keyless
+      packages: write        # Push to GHCR (推送到容器仓库)
+      id-token: write        # Cosign OIDC keyless (无密钥签名)
     outputs:
       image_repo: ${{ steps.meta-prep.outputs.image_repo }}
       image_tag: ${{ steps.tag.outputs.image_tag }}
@@ -23,6 +38,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      # Prepare image name (lowercase) | 准备镜像名称（小写）
       - name: Prepare lowercase image repo
         id: meta-prep
         run: |
@@ -31,7 +47,7 @@ jobs:
           echo "image_repo=$IMAGE_REPO_LOWER" >> $GITHUB_OUTPUT
           echo "Using image repo: $IMAGE_REPO_LOWER"
 
-      # tag 统一：sha-xxxxxxx
+      # Prepare tag: sha-xxxxxxx | 准备标签：取commit前7位
       - name: Prepare tag
         id: tag
         run: |
@@ -49,7 +65,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 1) Build 本地镜像（给 Trivy 扫描用，不 push）
+      # ========== Step 1: Build local image for scanning ==========
+      # 步骤1: 构建本地镜像用于安全扫描（不推送）
       - name: Build image locally for scanning
         uses: docker/build-push-action@v6
         with:
@@ -64,7 +81,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 2) Trivy 镜像漏洞 gate（HIGH/CRITICAL 直接失败）
+      # ========== Step 2: Trivy security gate ==========
+      # 步骤2: Trivy安全门禁 - HIGH/CRITICAL漏洞直接失败
       - name: Trivy image scan (gate)
         uses: aquasecurity/trivy-action@0.32.0
         with:
@@ -76,7 +94,8 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
-      # 3) Gate 通过后再 push（sha-xxxxxxx + latest）
+      # ========== Step 3: Push image after gate passed ==========
+      # 步骤3: 安全检查通过后推送镜像（sha标签 + latest标签）
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
@@ -91,7 +110,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 4) 生成 SBOM（CycloneDX JSON）
+      # ========== Step 4: Generate SBOM ==========
+      # 步骤4: 生成软件物料清单（CycloneDX格式）
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0
 
@@ -105,7 +125,8 @@ jobs:
           name: sbom-${{ steps.tag.outputs.image_tag }}
           path: sbom.cdx.json
 
-      # 5) Cosign OIDC keyless 签名 + 附加 SBOM attestation
+      # ========== Step 5: Cosign sign image ==========
+      # 步骤5: 使用Cosign对镜像签名（OIDC无密钥模式）
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.8.2
 
@@ -115,6 +136,7 @@ jobs:
         run: |
           cosign sign --yes ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
 
+      # Attach SBOM as attestation | 将SBOM作为证明附加到镜像
       - name: Cosign attach SBOM attestation
         env:
           COSIGN_EXPERIMENTAL: "true"
@@ -124,6 +146,7 @@ jobs:
             --type cyclonedx \
             ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
 
+      # ========== Summary ==========
       - name: Summary
         run: |
           echo "### ✅ CI Completed" >> $GITHUB_STEP_SUMMARY

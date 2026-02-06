@@ -15,7 +15,7 @@ A serverless RAG (Retrieval-Augmented Generation) API built with FastAPI, Azure 
 - 🧠 **Local Embedding** – Uses `all-MiniLM-L6-v2` (384-dim), zero API costs
 - 🤖 **GPT-5-mini Responses** – OpenAI Responses API for answer generation
 - 📦 **Containerized** – Multi-stage Docker build, deploys to Azure Container Apps
-- 💰 **Student-Friendly** – Avoids costly services (ACR, Azure OpenAI)
+- 💰 **Cost-Effective** – Avoids costly services (ACR, Azure OpenAI)
 - 🔄 **Full CI/CD** – GitHub Actions → GHCR → Azure Container Apps
 - 🔒 **Security Scanning** – Trivy scans for image + dependency vulnerabilities (PR gate)
 - 🐦 **Canary Deployment** – Progressive rollout (0% → 10% → 50% → 100%) with auto-rollback
@@ -131,7 +131,7 @@ CI builds and pushes to GHCR, CD deploys to Azure Container Apps automatically.
 - 🧠 **本地 Embedding** – 使用 `all-MiniLM-L6-v2`（384 维），零 API 成本
 - 🤖 **GPT-5-mini 回答** – 使用 OpenAI Responses API 生成回答
 - 📦 **容器化部署** – 多阶段 Docker 构建，部署到 Azure Container Apps
-- 💰 **学生友好** – 避开高成本服务（ACR、Azure OpenAI）
+- 💰 **成本效益** – 避开高成本服务（ACR、Azure OpenAI）
 - 🔄 **完整 CI/CD** – GitHub Actions → GHCR → Azure Container Apps
 - 🔒 **安全扫描** – Trivy 镜像 + 依赖漏洞扫描（PR 门禁）
 - 🐦 **金丝雀部署** – 渐进式发布（0% → 10% → 50% → 100%）+ 自动回滚
@@ -247,7 +247,7 @@ FastAPI、Azure AI Search、OpenAI を使用したサーバーレス RAG（検�
 - 🧠 **ローカル Embedding** – `all-MiniLM-L6-v2`（384次元）を使用、API コストゼロ
 - 🤖 **GPT-5-mini 回答生成** – OpenAI Responses API による回答生成
 - 📦 **コンテナ化** – マルチステージ Docker ビルド、Azure Container Apps にデプロイ
-- 💰 **学生向け** – 高コストサービス（ACR、Azure OpenAI）を回避
+- 💰 **コスト効率** – 高コストサービス（ACR、Azure OpenAI）を回避
 - 🔄 **完全な CI/CD** – GitHub Actions → GHCR → Azure Container Apps
 - 🔒 **セキュリティスキャン** – Trivy によるイメージ + 依存関係の脆弱性スキャン（PR ゲート）
 - 🐦 **カナリアデプロイ** – 段階的リリース（0% → 10% → 50% → 100%）+ 自動ロールバック

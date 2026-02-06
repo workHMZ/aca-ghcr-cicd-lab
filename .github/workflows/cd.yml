@@ -1,3 +1,16 @@
+# ============================================================================
+# CD - Canary Deploy to Azure Container Apps
+# CD流水线 - 金丝雀部署到Azure容器应用
+# ============================================================================
+# Trigger: After CI workflow completes successfully
+# 触发条件: CI流水线成功完成后自动触发
+# ============================================================================
+# Deployment Strategy (部署策略):
+#   0% smoke test (label直连) → 10% → 50% → 100%
+#   Health check at each stage, auto-rollback on failure
+#   每阶段健康检查，失败自动回滚
+# ============================================================================
+
 name: CD - Canary Deploy to Azure Container Apps
 
 on:
@@ -16,6 +29,8 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Only deploy on success or manual trigger
+    # 仅在CI成功或手动触发时部署
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
@@ -24,6 +39,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # Prepare image URL | 准备镜像地址
       - name: Prepare image url
         id: image-prep
         shell: bash
@@ -42,7 +58,8 @@ jobs:
           echo "image_url=$LOWER_IMAGE:$TAG" >> $GITHUB_OUTPUT
           echo "🐳 Using image: $LOWER_IMAGE:$TAG"
 
-      # 1) 强制开启多版本模式（否则无法金丝雀/回滚）
+      # ========== Step 1: Enable multiple revisions ==========
+      # 步骤1: 启用多版本模式（金丝雀部署和回滚的前提条件）
       - name: Ensure Multiple Revisions mode
         shell: bash
         run: |
@@ -53,7 +70,8 @@ jobs:
             -n "${{ env.AZURE_CONTAINER_APP_NAME }}" \
             --revisions-mode multiple
 
-      # 2) 部署新版（会创建新 revision）
+      # ========== Step 2: Deploy new revision ==========
+      # 步骤2: 部署新镜像（创建新版本）
       - name: Deploy to Azure Container Apps
         uses: azure/container-apps-deploy-action@v2
         with:
@@ -64,7 +82,13 @@ jobs:
           registryUsername: ${{ github.actor }}
           registryPassword: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3) Canary：label 直连测活(0%) -> 10% -> 50% -> 100% + 自动回滚
+      # ========== Step 3: Canary rollout ==========
+      # 步骤3: 金丝雀发布流程
+      #   - 0%: Label直连测活（不影响生产流量）
+      #   - 10%: 小规模验证
+      #   - 50%: 扩大范围
+      #   - 100%: 全量切换
+      #   - 任何阶段健康检查失败则自动回滚
       - name: Canary rollout logic
         shell: bash
         run: |
@@ -80,7 +104,8 @@ jobs:
             exit 1
           fi
 
-          # 最新部署的 revision（按 createdTime 排序取最新）
+          # Get new revision (latest by createdTime)
+          # 获取新版本（按创建时间排序取最新）
           NEW_REV=$(az containerapp revision list -g "$RG" -n "$APP" \
             --query "sort_by([].{name:name, created:properties.createdTime}, &created)[-1].name" -o tsv)
 
@@ -89,20 +114,22 @@ jobs:
             exit 1
           fi
 
-          # 当前稳定版：trafficWeight > 0 且最大（可能为空：首次部署）
+          # Get stable revision (highest traffic weight)
+          # 获取稳定版本（流量权重最高的版本）
           STABLE_REV=$(az containerapp revision list -g "$RG" -n "$APP" \
-            --query "sort_by([?properties.trafficWeight!=null && properties.trafficWeight>`0`].{name:name, w:properties.trafficWeight}, &w)[-1].name" -o tsv || true)
+            --query "sort_by([?properties.trafficWeight!=null && properties.trafficWeight>\`0\`].{name:name, w:properties.trafficWeight}, &w)[-1].name" -o tsv || true)
 
           echo "🆕 New Revision: $NEW_REV"
           echo "🛡️ Stable Revision: ${STABLE_REV:-<none>}"
 
-          # label URL（推荐用 label 前置：canary---<FQDN>）
+          # Health check URLs | 健康检查地址
           CANARY_URL="https://canary---${FQDN}/health"
           MAIN_URL="https://${FQDN}/health"
 
           echo "🩺 Canary URL: $CANARY_URL"
           echo "🩺 Main URL:   $MAIN_URL"
 
+          # Health check function | 健康检查函数
           check_health() {
             local url="$1"
             local timeout="${2:-10}"
@@ -119,6 +146,7 @@ jobs:
             return 1
           }
 
+          # Rollback function | 回滚函数
           rollback() {
             if [ -z "${STABLE_REV:-}" ] || [ "$STABLE_REV" = "None" ]; then
               echo "🚨 No stable revision to rollback to (likely first deployment)."
@@ -131,7 +159,8 @@ jobs:
             exit 1
           }
 
-          # === 首次部署或无法识别稳定版 ===
+          # === First deployment (no stable revision) ===
+          # === 首次部署（无稳定版本）===
           if [ -z "${STABLE_REV:-}" ] || [ "$STABLE_REV" = "None" ] || [ "$NEW_REV" = "$STABLE_REV" ]; then
             echo "⚠️ First deployment (or no stable revision). Route 100% to NEW_REV and health check main URL."
             az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
@@ -145,13 +174,14 @@ jobs:
             exit 0
           fi
 
-          # === Canary 部署流程 ===
+          # === Canary deployment flow ===
+          # === 金丝雀部署流程 ===
 
-          # 移除旧 canary label（不依赖 list 字段结构）
+          # Remove old canary label | 移除旧的canary标签
           echo "🏷️ Removing any existing 'canary' label (best-effort)..."
           az containerapp revision label remove --name "$APP" --resource-group "$RG" --label canary || true
 
-          # 给新版本打上 canary label
+          # Add canary label to new revision | 给新版本打上canary标签
           echo "🏷️ Assigning 'canary' label to $NEW_REV..."
           az containerapp revision label add \
             --name "$APP" \
@@ -159,34 +189,34 @@ jobs:
             --revision "$NEW_REV" \
             --label canary
 
-          # 阶段 0：0% 冒烟测试（label 直连，避免流量稀释）
+          # Stage 0: 0% smoke test (label URL) | 阶段0: 0%冒烟测试
           echo "🧪 Smoke testing via label URL (0% production traffic)..."
           echo "⏳ Waiting for container to start (15s)..."
           sleep 15
           if ! check_health "$CANARY_URL" 15; then rollback; fi
 
-          # 阶段 1：10%
+          # Stage 1: 10% | 阶段1: 10%流量
           echo "🐤 Shifting 10% traffic to new revision..."
           az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=90" "$NEW_REV=10"
           echo "⏳ Waiting for traffic to propagate (10s)..."
           sleep 10
           if ! check_health "$CANARY_URL"; then rollback; fi
 
-          # 阶段 2：50%
+          # Stage 2: 50% | 阶段2: 50%流量
           echo "⚖️ Shifting 50% traffic..."
           az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$STABLE_REV=50" "$NEW_REV=50"
           echo "⏳ Waiting for traffic to propagate (10s)..."
           sleep 10
           if ! check_health "$CANARY_URL"; then rollback; fi
 
-          # 阶段 3：100%
+          # Stage 3: 100% | 阶段3: 100%全量
           echo "🚀 Promoting to 100% traffic..."
           az containerapp ingress traffic set -g "$RG" -n "$APP" --revision-weight "$NEW_REV=100"
           echo "⏳ Waiting for traffic to propagate (5s)..."
           sleep 5
           if ! check_health "$MAIN_URL"; then rollback; fi
 
-          # 可选：停用旧版本（节省资源）
+          # Deactivate old revision (save resources) | 停用旧版本（节省资源）
           echo "💤 Deactivating old stable revision $STABLE_REV (optional)..."
           az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$STABLE_REV" || true
 
@@ -197,29 +227,31 @@ jobs:
           echo "  - Canary URL: $CANARY_URL"
           echo "  - Production URL: $MAIN_URL"
 
+      # ========== Summary ==========
       - name: Deployment Summary
         if: success()
         shell: bash
         run: |
-          echo "### ✅ CD Completed" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ CD Completed | 部署完成" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Resource Group:** \`${{ env.AZURE_RESOURCE_GROUP }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Container App:** \`${{ env.AZURE_CONTAINER_APP_NAME }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** \`${{ steps.image-prep.outputs.image_url }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Deployment Strategy:** Canary (0% smoke → 10% → 50% → 100%)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🌐 **Production URL:** https://${{ env.AZURE_CONTAINER_APP_NAME }}.<your-aca-env-domain>/health" >> $GITHUB_STEP_SUMMARY
+          echo "**部署策略:** 金丝雀 (0%冒烟 → 10% → 50% → 100%)" >> $GITHUB_STEP_SUMMARY
 
       - name: Deployment Failed Summary
         if: failure()
         shell: bash
         run: |
-          echo "### ❌ CD Failed" >> $GITHUB_STEP_SUMMARY
+          echo "### ❌ CD Failed | 部署失败" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Resource Group:** \`${{ env.AZURE_RESOURCE_GROUP }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Container App:** \`${{ env.AZURE_CONTAINER_APP_NAME }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Image:** \`${{ steps.image-prep.outputs.image_url }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⚠️ Deployment failed. Check logs for details." >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ 部署失败，请查看日志了解详情。" >> $GITHUB_STEP_SUMMARY
           echo "🔄 Traffic should have been rolled back to the stable revision (if existed)." >> $GITHUB_STEP_SUMMARY
+          echo "🔄 流量已自动回滚到稳定版本（如果存在）。" >> $GITHUB_STEP_SUMMARY
