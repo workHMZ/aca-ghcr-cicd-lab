@@ -38,6 +38,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Free disk space
+        run: |
+          docker system prune -af
+          docker builder prune -af
+
       # Prepare image name (lowercase) | 准备镜像名称（小写）
       - name: Prepare lowercase image repo
         id: meta-prep
@@ -78,6 +83,7 @@ jobs:
           build-args: |
             BUILD_SHA=${{ github.sha }}
             IMAGE_TAG=${{ steps.tag.outputs.image_tag }}
+            PRELOAD_EMBEDDING_MODEL=0
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -107,6 +113,7 @@ jobs:
           build-args: |
             BUILD_SHA=${{ github.sha }}
             IMAGE_TAG=${{ steps.tag.outputs.image_tag }}
+            PRELOAD_EMBEDDING_MODEL=0
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

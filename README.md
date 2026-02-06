@@ -61,6 +61,15 @@ uvicorn app.main:app --reload
 # Visit http://127.0.0.1:8000/docs
 ```
 
+### 🐳 Docker Build Notes
+
+- Default: preloads the embedding model during build (larger image, faster first request).
+- Skip preload (smaller, faster CI builds):
+  `docker build --build-arg PRELOAD_EMBEDDING_MODEL=0 -t rag-api .`
+- Force preload:
+  `docker build --build-arg PRELOAD_EMBEDDING_MODEL=1 -t rag-api .`
+- CI sets `PRELOAD_EMBEDDING_MODEL=0` to avoid runner disk pressure.
+
 ### 🔄 CI/CD Deployment
 
 #### Prerequisites
@@ -209,6 +218,15 @@ uvicorn app.main:app --reload
 # 访问 http://127.0.0.1:8000/docs
 ```
 
+### 🐳 Docker 构建说明
+
+- 默认：构建时预下载 embedding 模型（镜像更大，首次请求更快）。
+- 跳过预下载（更小、CI 更快）：
+  `docker build --build-arg PRELOAD_EMBEDDING_MODEL=0 -t rag-api .`
+- 强制预下载：
+  `docker build --build-arg PRELOAD_EMBEDDING_MODEL=1 -t rag-api .`
+- CI 中已设置 `PRELOAD_EMBEDDING_MODEL=0` 以减少磁盘占用。
+
 ### 🔄 CI/CD 部署
 
 #### 前置条件
@@ -356,6 +374,15 @@ python scripts/ingest.py  # まず data/ ディレクトリにドキュメント
 uvicorn app.main:app --reload
 # http://127.0.0.1:8000/docs にアクセス
 ```
+
+### 🐳 Docker ビルドメモ
+
+- 既定：ビルド時に embedding モデルを事前取得（イメージは大きく、初回応答は速い）。
+- 事前取得をスキップ（小さく、CI が速い）：
+  `docker build --build-arg PRELOAD_EMBEDDING_MODEL=0 -t rag-api .`
+- 事前取得を強制：
+  `docker build --build-arg PRELOAD_EMBEDDING_MODEL=1 -t rag-api .`
+- CI では `PRELOAD_EMBEDDING_MODEL=0` を設定し、ディスク使用量を抑えています。
 
 ### 🔄 CI/CD デプロイメント
 
