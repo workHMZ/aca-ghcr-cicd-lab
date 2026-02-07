@@ -14,7 +14,7 @@ azure-search-documents==11.6.0
 sentence-transformers==3.4.1
 numpy==1.26.4
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.3.1+cpu; platform_system == "Linux"
+torch==2.6.0+cpu; platform_system == "Linux"
 
 # Document Processing
 pypdf==6.6.2

@@ -188,7 +188,7 @@ jobs:
             local attempts="${3:-6}"
             for i in $(seq 1 "$attempts"); do
               CURRENT_WEIGHT=$(az containerapp ingress traffic show -g "$RG" -n "$APP" \
-                --query "sum(traffic[?revisionName=='$rev'].weight)" -o tsv 2>/dev/null || echo "0")
+                --query "sum([?revisionName=='$rev'].weight)" -o tsv 2>/dev/null || echo "0")
               if [ "$CURRENT_WEIGHT" = "$expected" ]; then
                 return 0
               fi
