@@ -279,7 +279,10 @@ jobs:
           echo "🛡️ Stable Revision: ${STABLE_REV:-<none>}"
 
           # Health check URLs | 健康检查地址
-          CANARY_URL="https://canary---${FQDN}/health"
+          # Azure label URL format: {app-name}---{label}.{env-domain}
+          APP_NAME="${FQDN%%.*}"                    # serverless-rag-api
+          ENV_DOMAIN="${FQDN#*.}"                   # wonderfulforest-xxx.japaneast.azurecontainerapps.io
+          CANARY_URL="https://${APP_NAME}---canary.${ENV_DOMAIN}/health"
           MAIN_URL="https://${FQDN}/health"
 
           echo "🩺 Canary URL: $CANARY_URL"
