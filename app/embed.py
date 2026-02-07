@@ -4,11 +4,23 @@ Uses all-MiniLM-L6-v2 model (~80MB) - runs locally, no API costs.
 Vector dimension: 384
 """
 
+import threading
 from sentence_transformers import SentenceTransformer
 
-# Load model once at module level for efficiency
-# First run will auto-download (~80MB), cached locally afterward
-model = SentenceTransformer('all-MiniLM-L6-v2')
+_MODEL = None
+_MODEL_LOCK = threading.Lock()
+
+def _get_model() -> SentenceTransformer:
+    """
+    Lazy-load the model so the app can start quickly and /health responds
+    even if the model needs to download on first use.
+    """
+    global _MODEL
+    if _MODEL is None:
+        with _MODEL_LOCK:
+            if _MODEL is None:
+                _MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+    return _MODEL
 
 
 def embed_text(text: str) -> list[float]:
@@ -27,6 +39,7 @@ def embed_text(text: str) -> list[float]:
     if not text:
         return []
     # convert to list for JSON serialization
+    model = _get_model()
     return model.encode(text).tolist()
 
 
@@ -42,6 +55,7 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
     """
     if not texts:
         return []
+    model = _get_model()
     return model.encode(texts).tolist()
 
 

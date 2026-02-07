@@ -69,6 +69,11 @@ uvicorn app.main:app --reload
 - Force preload:
   `docker build --build-arg PRELOAD_EMBEDDING_MODEL=1 -t rag-api .`
 - CI sets `PRELOAD_EMBEDDING_MODEL=0` to avoid runner disk pressure.
+- When preload is disabled, the model downloads on the first `/query` call.
+  `/health` will still respond because the model is lazy-loaded at query time.
+- CD sends a `/warmup` request on the new revision to preload the model before traffic shift.
+- Linux uses CPU-only PyTorch wheels by default (see `requirements.txt`) to avoid CUDA/NVIDIA packages in CI.
+  - Want GPU? Remove the `torch==...+cpu` line and the `--extra-index-url` line in `requirements.txt`.
 
 ### 🔄 CI/CD Deployment
 
@@ -226,6 +231,11 @@ uvicorn app.main:app --reload
 - 强制预下载：
   `docker build --build-arg PRELOAD_EMBEDDING_MODEL=1 -t rag-api .`
 - CI 中已设置 `PRELOAD_EMBEDDING_MODEL=0` 以减少磁盘占用。
+- 当关闭预下载时，模型会在第一次 `/query` 调用时下载。
+  `/health` 不受影响，因为模型是懒加载的。
+- CD 会在新修订上发送 `/warmup` 预热请求，再进行流量切换。
+- Linux 默认使用 CPU-only 的 PyTorch（见 `requirements.txt`），避免 CI 拉取 CUDA/NVIDIA 包。
+  - 需要 GPU？请移除 `requirements.txt` 中的 `torch==...+cpu` 和 `--extra-index-url` 两行。
 
 ### 🔄 CI/CD 部署
 
@@ -383,6 +393,11 @@ uvicorn app.main:app --reload
 - 事前取得を強制：
   `docker build --build-arg PRELOAD_EMBEDDING_MODEL=1 -t rag-api .`
 - CI では `PRELOAD_EMBEDDING_MODEL=0` を設定し、ディスク使用量を抑えています。
+- 事前取得を無効にした場合、モデルは最初の `/query` でダウンロードされます。
+  `/health` は遅延ロードのため影響を受けません。
+- CD は新しいリビジョンに対して `/warmup` を実行し、トラフィック切替前にモデルを読み込みます。
+- Linux では CPU-only の PyTorch を既定で使用（`requirements.txt` 参照）、CI で CUDA/NVIDIA パッケージを避けます。
+  - GPU を使う場合は `requirements.txt` の `torch==...+cpu` と `--extra-index-url` を削除してください。
 
 ### 🔄 CI/CD デプロイメント
 
