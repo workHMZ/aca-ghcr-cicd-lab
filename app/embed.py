@@ -1,6 +1,6 @@
 """
 Embedding service for text vectorization using sentence-transformers.
-Uses all-MiniLM-L6-v2 model (~80MB) - runs locally, no API costs.
+Uses all-MiniLM-L6-v2 model (~80MB) - runs locally without external API calls.
 Vector dimension: 384
 """
 
