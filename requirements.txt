@@ -12,6 +12,7 @@ azure-search-documents==11.6.0
 
 # Embedding
 sentence-transformers==3.4.1
+pillow>=12.1.1                # CVE-2026-25990 fix (transitive dep)
 numpy==1.26.4
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.6.0+cpu; platform_system == "Linux"
