@@ -1,10 +1,5 @@
-# ============================================================================
-# CI - Build, Scan, SBOM, Sign, Push to GHCR
-# CI流水线 - 构建、扫描、生成SBOM、签名、推送到GHCR
-# ============================================================================
-# Trigger: push to main (only for code/config changes, not docs)
-# 触发条件: 推送到main分支（仅限代码/配置变更，不包括文档）
-# ============================================================================
+# CI: Build → Trivy scan → Push → SBOM → Cosign sign
+# 代码/配置变更时触发，文档变更不触发
 
 name: CI - Build Scan SBOM Sign Push to GHCR
 
@@ -12,7 +7,6 @@ on:
   push:
     branches: [main]
     paths:
-      # Only trigger on code/config changes (忽略文档和workflow变更)
       - 'app/**'
       - 'scripts/**'
       - 'Dockerfile'
@@ -28,11 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write        # Push to GHCR (推送到容器仓库)
-      id-token: write        # Cosign OIDC keyless (无密钥签名)
+      packages: write       # push GHCR
+      id-token: write       # cosign OIDC keyless
     outputs:
       image_repo: ${{ steps.meta-prep.outputs.image_repo }}
       image_tag: ${{ steps.tag.outputs.image_tag }}
+      image_digest: ${{ steps.push-image.outputs.digest }}
 
     steps:
       - name: Checkout repository
@@ -43,22 +38,22 @@ jobs:
           docker system prune -af
           docker builder prune -af
 
-      # Prepare image name (lowercase) | 准备镜像名称（小写）
+      # 镜像名转小写
       - name: Prepare lowercase image repo
         id: meta-prep
         run: |
           IMAGE_REPO="${{ env.REGISTRY }}/${{ github.repository }}"
           IMAGE_REPO_LOWER=$(echo "$IMAGE_REPO" | tr '[:upper:]' '[:lower:]')
           echo "image_repo=$IMAGE_REPO_LOWER" >> $GITHUB_OUTPUT
-          echo "Using image repo: $IMAGE_REPO_LOWER"
+          echo "image repo: $IMAGE_REPO_LOWER"
 
-      # Prepare tag: sha-xxxxxxx | 准备标签：取commit前7位
+      # tag = sha-<前7位>
       - name: Prepare tag
         id: tag
         run: |
           SHORT_SHA="${GITHUB_SHA:0:7}"
           echo "image_tag=sha-$SHORT_SHA" >> $GITHUB_OUTPUT
-          echo "Using tag: sha-$SHORT_SHA"
+          echo "tag: sha-$SHORT_SHA"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -70,8 +65,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ========== Step 1: Build local image for scanning ==========
-      # 步骤1: 构建本地镜像用于安全扫描（不推送）
+      # 1) 本地构建，不推送，给 Trivy 扫
       - name: Build image locally for scanning
         uses: docker/build-push-action@v6
         with:
@@ -87,8 +81,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ========== Step 2: Trivy security gate ==========
-      # 步骤2: Trivy安全门禁 - HIGH/CRITICAL漏洞直接失败
+      # 2) Trivy 扫描，HIGH/CRITICAL 直接挂掉
       - name: Trivy image scan (gate)
         uses: aquasecurity/trivy-action@0.32.0
         with:
@@ -100,9 +93,9 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
-      # ========== Step 3: Push image after gate passed ==========
-      # 步骤3: 安全检查通过后推送镜像（sha标签 + latest标签）
+      # 3) 扫描过了，推送 sha + latest 两个 tag
       - name: Build and push Docker image
+        id: push-image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -117,14 +110,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ========== Step 4: Generate SBOM ==========
-      # 步骤4: 生成软件物料清单（CycloneDX格式）
+      # 4) 导出 digest，CD 用 digest 部署
+      - name: Export image digest
+        run: |
+          DIGEST="${{ steps.push-image.outputs.digest }}"
+          echo "digest: $DIGEST"
+          echo "$DIGEST" > digest.txt
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-digest
+          path: digest.txt
+
+      # 5) 生成 SBOM (CycloneDX)
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@v0
 
       - name: Generate SBOM (CycloneDX JSON)
         run: |
-          syft ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }} -o cyclonedx-json > sbom.cdx.json
+          syft ${{ steps.meta-prep.outputs.image_repo }}@${{ steps.push-image.outputs.digest }} -o cyclonedx-json > sbom.cdx.json
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
@@ -132,8 +137,7 @@ jobs:
           name: sbom-${{ steps.tag.outputs.image_tag }}
           path: sbom.cdx.json
 
-      # ========== Step 5: Cosign sign image ==========
-      # 步骤5: 使用Cosign对镜像签名（OIDC无密钥模式）
+      # 6) Cosign 签名 (OIDC keyless)
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.8.2
 
@@ -141,9 +145,9 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
-          cosign sign --yes ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+          cosign sign --yes ${{ steps.meta-prep.outputs.image_repo }}@${{ steps.push-image.outputs.digest }}
 
-      # Attach SBOM as attestation | 将SBOM作为证明附加到镜像
+      # 把 SBOM 作为 attestation 附加到镜像
       - name: Cosign attach SBOM attestation
         env:
           COSIGN_EXPERIMENTAL: "true"
@@ -151,14 +155,14 @@ jobs:
           cosign attest --yes \
             --predicate sbom.cdx.json \
             --type cyclonedx \
-            ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+            ${{ steps.meta-prep.outputs.image_repo }}@${{ steps.push-image.outputs.digest }}
 
-      # ========== Summary ==========
       - name: Summary
         run: |
-          echo "### ✅ CI Completed" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Also tagged:** \`latest\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Trivy gate:** HIGH/CRITICAL blocked" >> $GITHUB_STEP_SUMMARY
-          echo "**SBOM:** sbom.cdx.json uploaded" >> $GITHUB_STEP_SUMMARY
-          echo "**Cosign:** image signed + SBOM attested (OIDC keyless)" >> $GITHUB_STEP_SUMMARY
+          echo "### CI Done" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** \`${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Digest:** \`${{ steps.push-image.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tags:** sha + latest" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trivy:** HIGH/CRITICAL gate passed" >> $GITHUB_STEP_SUMMARY
+          echo "- **SBOM:** sbom.cdx.json uploaded" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cosign:** signed + SBOM attested (OIDC keyless)" >> $GITHUB_STEP_SUMMARY
