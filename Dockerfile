@@ -22,10 +22,13 @@ COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
 # Build-time version info (injected by CI)
+ARG APP_VERSION=unknown
 ARG BUILD_SHA=unknown
 ARG IMAGE_TAG=unknown
+ENV APP_VERSION=$APP_VERSION
 ENV BUILD_SHA=$BUILD_SHA
 ENV IMAGE_TAG=$IMAGE_TAG
+ENV DD_VERSION=$APP_VERSION
 
 # Copy application code
 COPY app/ ./app/
@@ -45,5 +48,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application wrapped in Datadog APM tracer
+CMD ["ddtrace-run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
