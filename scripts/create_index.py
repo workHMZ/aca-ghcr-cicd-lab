@@ -1,6 +1,9 @@
 """
 Script to create Azure AI Search index with vector search support.
 Uses 384-dimensional vectors (matching sentence-transformers all-MiniLM-L6-v2).
+
+ベクトル検索をサポートする Azure AI Search インデックスを作成するスクリプト。
+384次元のベクトルを使用します（sentence-transformers all-MiniLM-L6-v2 と一致）。
 """
 
 import os
@@ -26,7 +29,7 @@ api_key = os.environ["AZURE_SEARCH_API_KEY"]
 
 
 def create_index():
-    """Create Azure AI Search index with hybrid search (vector + keyword) support."""
+    """Create Azure AI Search index with hybrid search (vector + keyword) support. / ハイブリッド検索（ベクトル + キーワード）をサポートする Azure AI Search インデックスを作成します。"""
     client = SearchIndexClient(
         endpoint=endpoint,
         credential=AzureKeyCredential(api_key)

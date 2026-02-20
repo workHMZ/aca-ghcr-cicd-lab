@@ -22,3 +22,7 @@ pypdf==6.6.2
 
 # OpenAI
 openai==2.17.0
+
+# Observability (Datadog & Logging)
+ddtrace==4.4.0
+python-json-logger==4.0.0

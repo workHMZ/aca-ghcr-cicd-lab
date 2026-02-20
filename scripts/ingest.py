@@ -1,6 +1,9 @@
 """
 Script to ingest documents (PDF/MD) into Azure AI Search.
 Reads files from data/ directory, chunks them, and uploads with embeddings.
+
+ドキュメント (PDF/MD) を Azure AI Search に取り込むスクリプト。
+data/ ディレクトリからファイルを読み込み、チャンク化して、埋め込みベクトルと共にアップロードします。
 """
 
 import os
@@ -24,7 +27,7 @@ api_key = os.environ["AZURE_SEARCH_API_KEY"]
 
 
 def read_pdf(path: str) -> str:
-    """Extract text from PDF file."""
+    """Extract text from PDF file. / PDF ファイルからテキストを抽出します。"""
     reader = PdfReader(path)
     text = ""
     for page in reader.pages:
@@ -38,12 +41,15 @@ def chunk_text(text: str, size: int = 500) -> list[str]:
     """
     Split text into chunks of specified size.
     For production, use LangChain's RecursiveCharacterTextSplitter.
+    
+    テキストを指定されたサイズのチャンクに分割します。
+    本番環境では、LangChain の RecursiveCharacterTextSplitter を使用することをお勧めします。
     """
     return [text[i:i+size] for i in range(0, len(text), size)]
 
 
 def main():
-    """Main ingestion workflow."""
+    """Main ingestion workflow. / メインの取り込みワークフロー。"""
     client = SearchClient(
         endpoint=endpoint,
         index_name=index_name,

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Test script for Azure Container Apps deployed RAG API.
-
 Requires AZURE_ACCESS_TOKEN environment variable to be set for authenticated endpoints.
+
+Azure Container Apps にデプロイされた RAG API のテストスクリプト。
+認証付きエンドポイントには AZURE_ACCESS_TOKEN 環境変数が必要です。
 """
 
 import os
@@ -38,7 +40,7 @@ def _auth_headers(token: str | None) -> dict:
 
 
 def _print_response_debug(resp: requests.Response) -> None:
-    """Print helpful debug info without assuming JSON."""
+    """Print helpful debug info without assuming JSON. / JSONを前提としないデバッグ情報を出力"""
     print(f"Status Code: {resp.status_code}")
     ct = resp.headers.get("content-type", "")
     print(f"Content-Type: {ct}")
@@ -59,7 +61,7 @@ def _print_response_debug(resp: requests.Response) -> None:
 
 
 def test_health() -> bool:
-    """Test the health endpoint (may be protected by Easy Auth)."""
+    """Test the health endpoint. / ヘルスエンドポイントのテスト"""
     token = _get_token()
     headers = _auth_headers(token)
 
@@ -76,7 +78,7 @@ def test_health() -> bool:
 
 
 def test_query(question: str = "什么是 RAG？", top_k: int = 3) -> bool:
-    """Test the query endpoint (with optional authentication)."""
+    """Test the query endpoint. / クエリエンドポイントのテスト"""
     token = _get_token()
     headers = _auth_headers(token)
     data = {"question": question, "top_k": top_k}

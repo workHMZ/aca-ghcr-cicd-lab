@@ -1,6 +1,9 @@
 """
 Script to clear all documents from Azure AI Search index.
 Run this before re-ingesting to ensure clean state.
+
+Azure AI Search インデックスからすべてのドキュメントをクリアするスクリプト。
+クリーンな状態を確保するため、再取り込みの前にこれを実行してください。
 """
 
 import os
@@ -19,7 +22,7 @@ api_key = os.environ["AZURE_SEARCH_API_KEY"]
 
 
 def clear_index():
-    """Delete all documents from the index."""
+    """Delete all documents from the index. / インデックスからすべてのドキュメントを削除します。"""
     client = SearchClient(
         endpoint=endpoint,
         index_name=index_name,
