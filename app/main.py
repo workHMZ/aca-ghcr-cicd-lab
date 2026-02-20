@@ -1,6 +1,9 @@
 """
 Serverless RAG API - FastAPI application with Azure AI Search integration.
 Uses local sentence-transformers for embedding (no API costs).
+
+サーバーレス RAG API - Azure AI Search と統合された FastAPI アプリケーション。
+ローカルの sentence-transformers を使用して埋め込みを行います（APIコストゼロ）。
 """
 
 import os
@@ -20,10 +23,10 @@ from app.search_client import get_search_client
 
 
 # ---- Build / version metadata (injected by CI/CD) ----
-APP_VERSION = os.getenv("APP_VERSION", "1.6.0")
+APP_VERSION = os.getenv("APP_VERSION", "2.0.0")
 BUILD_SHA = os.getenv("BUILD_SHA", "unknown")
 IMAGE_TAG = os.getenv("IMAGE_TAG", "unknown")
-ENV_NAME = os.getenv("ENV_NAME", os.getenv("DD_ENV", "stg"))  # optional: dev/stg/prod
+ENV_NAME = os.getenv("ENV_NAME", os.getenv("DD_ENV", "prod"))  # optional: dev/stg/prod
 SERVICE_NAME = os.getenv("SERVICE_NAME", os.getenv("DD_SERVICE", "azure-rag-student"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "1024"))
@@ -43,6 +46,9 @@ def _safe_get_dd_correlation() -> dict[str, str]:
     """
     Safely return Datadog log correlation fields.
     Works when running under ddtrace-run; returns empty dict otherwise.
+    
+    Datadogのログ相関フィールド（Trace ID, Span ID等）を安全に返します。
+    ddtrace-runのスコープ内で実行されている場合に機能し、それ以外の場合は空の辞書を返します。
     """
     try:
         import ddtrace  # type: ignore
@@ -78,6 +84,8 @@ def _safe_get_dd_correlation() -> dict[str, str]:
 class DatadogJsonFormatter(jsonlogger.JsonFormatter):
     """
     JSON formatter that injects Datadog correlation fields + basic logger metadata.
+    
+    Datadogの相関フィールドと基本的なロガーメタデータを注入するカスタムJSONフォーマッター。
     """
 
     def add_fields(self, log_record: dict[str, Any], record: logging.LogRecord, message_dict: dict[str, Any]) -> None:
@@ -104,6 +112,8 @@ class DatadogJsonFormatter(jsonlogger.JsonFormatter):
 def _configure_logging() -> None:
     """
     Configure JSON logging once, avoid duplicate handlers, and unify uvicorn logs.
+    
+    JSONロギングを一度だけ設定し、ハンドラーの重複を防ぎ、uvicornのログ出力を一元化します。
     """
     root = logging.getLogger()
     root.setLevel(logging.INFO)
@@ -142,6 +152,9 @@ def get_openai_client() -> OpenAI:
     """
     Lazily initialize OpenAI client so the app can start and /health can respond
     even if OPENAI_API_KEY is missing (useful during infra bring-up).
+    
+    OpenAIクライアントを遅延初期化します。これにより、環境変数OPENAI_API_KEYが不足している場合でも、
+    アプリケーションの起動と/healthエンドポイントへの応答が可能になります。
     """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -151,7 +164,7 @@ def get_openai_client() -> OpenAI:
 
 app = FastAPI(
     title="Serverless RAG API",
-    description="RAG API using Azure AI Search with local sentence-transformers embedding",
+    description="RAG API using Azure AI Search with local sentence-transformers embedding (Azure AI Search とローカルの sentence-transformers を使用した RAG API)",
     version=APP_VERSION,
 )
 
@@ -175,7 +188,7 @@ class QueryResponse(BaseModel):
 
 @app.get("/")
 def root():
-    """Root endpoint with service info."""
+    """Root endpoint with service info. / サービス情報を提供するルートエンドポイント"""
     return {
         "service": "Serverless RAG API",
         "version": APP_VERSION,
@@ -189,7 +202,7 @@ def root():
 
 @app.get("/health")
 def health():
-    """Health check endpoint."""
+    """Health check endpoint. / ヘルスチェックエンドポイント"""
     return {
         "status": "ok",
         "service": SERVICE_NAME,
@@ -202,7 +215,7 @@ def health():
 
 @app.get("/warmup")
 def warmup():
-    """Warm up the embedding model so the first /query is fast."""
+    """Warm up the embedding model so the first /query is fast. / 初回の /query 応答を高速化するため、埋め込みモデルをウォームアップします"""
     try:
         _ = embed_text("warmup")
         return {"status": "ok", "embedding_dimension": get_dimension()}
@@ -214,6 +227,8 @@ def warmup():
 def query(req: QueryRequest):
     """
     Query the RAG system using hybrid search (vector + keyword).
+    
+    ハイブリッド検索（ベクトル検索 + キーワード検索）を使用して、RAGシステムにクエリを実行します。
     """
     # 1) Generate query vector using local embedding
     qvec = embed_text(req.question)

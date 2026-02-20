@@ -1,0 +1,33 @@
+schema-version: v2.2
+dd-service: serverless-rag-api
+team: workHMZ
+contacts:
+  - type: email
+    contact: workHMZ@github
+application: serverless-rag-api
+description: >-
+  RAG API using Azure AI Search with local sentence-transformers embedding.
+  Deployed on Azure Container Apps with Datadog APM monitoring.
+tier: Tier 3
+lifecycle: production
+languages:
+  - python
+type: web
+links:
+  - name: GitHub Repository
+    type: repo
+    url: https://github.com/workHMZ/aca-ghcr-cicd-lab
+  - name: Azure Container Apps
+    type: runbook
+    url: https://portal.azure.com
+  - name: CI Pipeline
+    type: pipeline
+    url: https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/ci.yml
+  - name: CD Pipeline
+    type: pipeline
+    url: https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/cd.yml
+ci-cd-pipeline: https://github.com/workHMZ/aca-ghcr-cicd-lab/actions
+tags:
+  - env:stg
+  - cloud:azure
+  - region:japaneast

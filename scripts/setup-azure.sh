@@ -1,6 +1,8 @@
 #!/bin/bash
 # Azure Container Apps Infrastructure Setup Script
 # Run this script to create the Azure resources needed for deployment
+# Azure Container Apps インフラ構築スクリプト
+# デプロイに必要な Azure リソースを作成するために実行してください
 
 set -e
 

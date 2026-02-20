@@ -1,6 +1,10 @@
-# CD: Canary deploy to Azure Container Apps
-# CI 成功后自动触发，也可手动触发
-# 流程: cosign verify → 0%冒烟 → 10% → 50% → 100%，失败自动回滚
+# ============================================================================
+# CD: Canary Deploy to Azure Container Apps
+# CD: Azure Container Apps へのカナリアデプロイ
+# ============================================================================
+# Triggered by CI success or manual dispatch
+# CI 成功時またはマニュアルディスパッチで起動
+# ============================================================================
 
 name: CD - Canary Deploy to Azure Container Apps
 
@@ -31,7 +35,8 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 从 CI 拿 digest
+      # Download digest artifact from CI run
+      # CI の成果物からダイジェストをダウンロード
       - name: Download image digest from CI
         if: github.event_name == 'workflow_run'
         uses: actions/download-artifact@v4
@@ -40,7 +45,8 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # GHCR 凭据：优先用 PAT，没配就用 GITHUB_TOKEN
+      # Resolve GHCR credentials: prefer PAT, fallback to GITHUB_TOKEN
+      # GHCR 認証情報の解決: PAT を優先し、未設定時は GITHUB_TOKEN にフォールバック
       - name: Resolve GHCR credentials
         id: ghcr-creds
         shell: bash
@@ -48,15 +54,16 @@ jobs:
           if [ -n "${{ secrets.GHCR_USERNAME }}" ] && [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
             echo "username=${{ secrets.GHCR_USERNAME }}" >> $GITHUB_OUTPUT
             echo "token=${{ secrets.GHCR_TOKEN }}" >> $GITHUB_OUTPUT
-            echo "用 GHCR_USERNAME/GHCR_TOKEN"
+            echo "Using GHCR_USERNAME/GHCR_TOKEN"
           else
             echo "username=${{ github.actor }}" >> $GITHUB_OUTPUT
             echo "token=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_OUTPUT
-            echo "GHCR_TOKEN 没配，用 GITHUB_TOKEN 代替"
-            echo "私有镜像的话，token 过期后拉取会失败"
+            echo "GHCR_TOKEN not set, falling back to GITHUB_TOKEN"
+            echo "For private images, token expiry may cause pull failures"
           fi
 
-      # 登录 GHCR（cosign verify 和 digest 解析要用）
+      # Log in to GHCR (required for cosign verify and digest resolution)
+      # GHCR にログイン（cosign 検証とダイジェスト解決に必要）
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -64,7 +71,8 @@ jobs:
           username: ${{ steps.ghcr-creds.outputs.username }}
           password: ${{ steps.ghcr-creds.outputs.token }}
 
-      # 拼镜像地址，优先从 artifact 读 digest，没有就从 registry 查
+      # Build image URL: prefer digest from artifact, fallback to registry query
+      # イメージ URL 構築: 成果物のダイジェストを優先、なければレジストリから取得
       - name: Prepare image url
         id: image-prep
         shell: bash
@@ -82,15 +90,15 @@ jobs:
 
           if [ -f digest.txt ]; then
             DIGEST=$(cat digest.txt | tr -d '[:space:]')
-            echo "digest (from CI): $DIGEST"
+            echo "digest (from CI artifact): $DIGEST"
           else
-            echo "没有 digest artifact，从 registry 查..."
+            echo "No digest artifact found, querying registry..."
             DIGEST=$(docker buildx imagetools inspect "$LOWER_IMAGE:$TAG" 2>/dev/null \
               | grep -m1 "^Digest:" | awk '{print $2}')
             if [ -n "$DIGEST" ]; then
               echo "digest (from registry): $DIGEST"
             else
-              echo "拿不到 digest，退出"
+              echo "Failed to resolve digest, exiting"
               exit 1
             fi
           fi
@@ -99,9 +107,10 @@ jobs:
           echo "image_tag=$TAG" >> $GITHUB_OUTPUT
           echo "image_digest=$DIGEST" >> $GITHUB_OUTPUT
           echo "image_url=$LOWER_IMAGE@$DIGEST" >> $GITHUB_OUTPUT
-          echo "部署镜像: $LOWER_IMAGE@$DIGEST (tag: $TAG)"
+          echo "Deploy image: $LOWER_IMAGE@$DIGEST (tag: $TAG)"
 
-      # 部署前验签：确认镜像是本仓库 CI 签的
+      # Verify image signature before deployment (supply chain security)
+      # デプロイ前にイメージ署名を検証（サプライチェーンセキュリティ）
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.8.2
 
@@ -109,14 +118,15 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
-          echo "验证镜像签名..."
+          echo "Verifying image signature..."
           cosign verify \
             --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${{ steps.image-prep.outputs.image_url }}"
-          echo "签名验证通过"
+          echo "Signature verified successfully"
 
-      # 开启多版本模式（canary 的前提）
+      # Enable multiple revisions mode (required for canary deployment)
+      # マルチリビジョンモードを有効化（カナリアデプロイの前提条件）
       - name: Ensure Multiple Revisions mode
         shell: bash
         run: |
@@ -127,18 +137,42 @@ jobs:
             -n "${{ env.AZURE_CONTAINER_APP_NAME }}" \
             --revisions-mode multiple
 
-      # 部署新 revision
-      - name: Deploy to Azure Container Apps
-        uses: azure/container-apps-deploy-action@v2
-        with:
-          resourceGroup: ${{ env.AZURE_RESOURCE_GROUP }}
-          containerAppName: ${{ env.AZURE_CONTAINER_APP_NAME }}
-          imageToDeploy: ${{ steps.image-prep.outputs.image_url }}
-          registryUrl: ${{ env.REGISTRY }}
-          registryUsername: ${{ steps.ghcr-creds.outputs.username }}
-          registryPassword: ${{ steps.ghcr-creds.outputs.token }}
+      # Record deploy start time for DORA Metrics lead time calculation
+      # DORA Metrics のリードタイム計算のためにデプロイ開始時刻を記録
+      - name: Record deploy start time
+        id: deploy-timer
+        run: echo "start=$(date +%s%N)" >> $GITHUB_OUTPUT
 
-      # Canary 发布：0% 冒烟 → 10% → 50% → 100%
+      # Deploy new revision (specify --container-name for multi-container apps)
+      # 新しいリビジョンをデプロイ（マルチコンテナ環境では --container-name を指定）
+      - name: Deploy to Azure Container Apps
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Ensure registry credentials are configured
+          # レジストリの認証情報を設定
+          az containerapp registry set \
+            -n "${{ env.AZURE_CONTAINER_APP_NAME }}" \
+            -g "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --server "${{ env.REGISTRY }}" \
+            --username "${{ steps.ghcr-creds.outputs.username }}" \
+            --password "${{ steps.ghcr-creds.outputs.token }}" \
+            --output none
+
+          # Update the specified container's image
+          # 指定されたコンテナのイメージを更新
+          az containerapp update \
+            -n "${{ env.AZURE_CONTAINER_APP_NAME }}" \
+            -g "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --container-name serverless-rag-api \
+            -i "${{ steps.image-prep.outputs.image_url }}" \
+            --output none
+
+          echo "✅ Deploy succeeded: ${{ steps.image-prep.outputs.image_url }}"
+
+      # Canary rollout: 0% smoke test → 10% → 50% → 100%
+      # カナリアリリース: 0% スモークテスト → 10% → 50% → 100%
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -148,14 +182,43 @@ jobs:
           APP: ${{ env.AZURE_CONTAINER_APP_NAME }}
         run: bash scripts/deploy_canary.sh "$RG" "$APP"
 
+      # ---- Datadog DORA Metrics ----
+      # ---- Datadog DORA メトリクス ----
+      - name: Extract App Version
+        id: version
+        if: success()
+        run: |
+          VERSION=$(grep -E '^__version__\s*=' app/__init__.py | cut -d '"' -f 2)
+          echo "app_version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Send DORA deployment event to Datadog (API)
+        if: ${{ success() }}
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+          DD_SITE: us5.datadoghq.com
+          DORA_SERVICE: serverless-rag-api
+          DORA_ENV: stg
+          DORA_STARTED_AT_NS: ${{ steps.deploy-timer.outputs.start }}
+          DORA_VERSION: ${{ steps.version.outputs.app_version }}
+          DORA_REPOSITORY_URL: https://github.com/${{ github.repository }}
+          WORKFLOW_EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GITHUB_SHA_CURRENT: ${{ github.sha }}
+        run: |
+          if [ -z "${DD_API_KEY:-}" ]; then
+            echo "Skipping Datadog DORA event: DD_API_KEY is not configured."
+            exit 0
+          fi
+          bash scripts/send_datadog_dora_deployment.sh
+
       - name: Deployment Summary
         if: success()
         shell: bash
         run: |
           echo "### CD Done" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| 项目 | 值 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Resource Group | \`${{ env.AZURE_RESOURCE_GROUP }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Container App | \`${{ env.AZURE_CONTAINER_APP_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Image | \`${{ steps.image-prep.outputs.image_repo }}:${{ steps.image-prep.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
@@ -169,11 +232,11 @@ jobs:
         run: |
           echo "### CD Failed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| 项目 | 值 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Resource Group | \`${{ env.AZURE_RESOURCE_GROUP }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Container App | \`${{ env.AZURE_CONTAINER_APP_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Image | \`${{ steps.image-prep.outputs.image_repo }}:${{ steps.image-prep.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Digest | \`${{ steps.image-prep.outputs.image_digest }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "部署失败，查看日志。流量应已自动回滚到 stable revision。" >> $GITHUB_STEP_SUMMARY
+          echo "Deployment failed. Traffic should have been auto-rolled back to the stable revision." >> $GITHUB_STEP_SUMMARY
