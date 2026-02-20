@@ -16,7 +16,7 @@ from app.search_client import get_search_client
 load_dotenv(override=True)
 
 # ---- Build / version metadata (injected by CI/CD) ----
-APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.1.0")
 BUILD_SHA = os.getenv("BUILD_SHA", "unknown")
 IMAGE_TAG = os.getenv("IMAGE_TAG", "unknown")
 ENV_NAME = os.getenv("ENV_NAME", "stg")  # optional: dev/stg/prod

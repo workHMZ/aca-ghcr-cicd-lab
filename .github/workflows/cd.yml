@@ -139,6 +139,9 @@ jobs:
           registryPassword: ${{ steps.ghcr-creds.outputs.token }}
 
       # Canary 发布：0% 冒烟 → 10% → 50% → 100%
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Canary rollout logic
         env:
           RG: ${{ env.AZURE_RESOURCE_GROUP }}
