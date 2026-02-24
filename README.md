@@ -2,7 +2,7 @@
 
 [English](#english) | [中文](#中文) | [日本語](#日本語)
 
-## 📁 Project Structure / 项目结构 / プロジェクト構造
+## Project Structure
 
 ```text
 ├── app/
@@ -32,177 +32,137 @@
 ---
 
 <a id="english"></a>
-## 🇺🇸 English
+## English
 
-A production-ready, serverless RAG (Retrieval-Augmented Generation) API. Built with FastAPI and Azure AI Search, it eliminates recurring embedding API costs by running `sentence-transformers` locally. The project showcases robust engineering practices, including a full CI/CD pipeline, canary deployments, and deep Datadog observability—making it an ideal reference architecture for scalable AI applications.
+### What problem / Why
+Running RAG applications often incurs high recurring costs for embedding APIs and requires managing complex infrastructure. This project provides a cost-optimized, serverless RAG architecture by running `sentence-transformers` locally within Azure Container Apps, combined with a CI/CD pipeline for zero-downtime deployments.
 
-### ✨ Key Features & Engineering Highlights
-
-- **Cost-Optimized Hybrid RAG**: Combines vector and keyword search (Azure AI Search) with local `all-MiniLM-L6-v2` embeddings, eliminating recurring embedding API costs. Uses GPT-5 for generation.
-- **Progressive Delivery (Canary)**: Zero-downtime deployments to Azure Container Apps with automated traffic shifting (0% → 10% → 50% → 100%), health checks, and auto-rollback.
-- **Supply Chain Security**: Cosign keyless signing (OIDC), SBOM generation (CycloneDX), and Trivy vulnerability scanning — all automated in CI.
-- **Enterprise Observability**: Datadog APM (`ddtrace`) with structured JSON logging, trace correlation, DORA metrics, and Service Catalog sync.
-
-### 🔄 CI/CD Pipeline Flow
-```text
-git push main
-  └─ CI: Build → Trivy Scan → Push GHCR → SBOM → Cosign Sign → Catalog Sync
-       └─ CD: Cosign Verify → Deploy ACA → Canary (0→10→50→100%) → DORA Event
-           └─ PR: Trivy Filesystem + Image Scan (Security Gate)
+### Architecture
+```mermaid
+graph TD
+    User -->|Query| ACA[Azure Container Apps<br>FastAPI + Local Embeddings]
+    ACA -->|Vector/Keyword Search| Search[Azure AI Search]
+    ACA -->|Prompt| LLM[OpenAI GPT-5]
+    ACA -->|Traces/Metrics| DD[Datadog]
 ```
 
-### 🛠 Tech Stack
-- **Application**: Python 3.12, FastAPI, Sentence-Transformers, OpenAI GPT-5
-- **Cloud & Infra**: Azure Container Apps, Azure AI Search, GHCR, Docker
-- **CI/CD & Security**: GitHub Actions, Trivy, Cosign (OIDC), Syft (SBOM)
-- **Observability**: Datadog APM / DORA Metrics / Service Catalog
+### CI/CD Pipeline
+- **Triggers**: Push to `main` branch (CI/CD), Pull Requests (Security Scan).
+- **Artifacts**: Docker image pushed to GitHub Container Registry (GHCR), SBOM (CycloneDX format), Cosign signature.
+- **Tags**: Images are tagged with the Git commit SHA (`sha-<short_sha>`).
+- **Deployment Strategy**: Canary rollout (0% → 10% → 50% → 100%) on Azure Container Apps with automated health checks and rollback.
 
-### 🚀 Quick Start
-```bash
-# 1. Install dependencies
-uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt
+### Observability
+- **Datadog APM**: Integrated `ddtrace` for distributed tracing and structured JSON logging.
+- **Service Catalog**: Automated sync of `service.datadog.yaml` to Datadog via CI pipeline.
+- **DORA Metrics**: Deployment events are sent to Datadog during the CD pipeline to track deployment frequency and lead time.
 
-# 2. Configure Environment (.env)
-cp .env.example .env
-# Set: AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_API_KEY, AZURE_SEARCH_INDEX_NAME, OPENAI_API_KEY
+### Security
+- **Permissions**: Uses least-privilege GitHub Actions `permissions` (e.g., `id-token: write` for Cosign OIDC, `packages: write` for GHCR).
+- **Authentication**: Azure authentication uses Service Principal credentials (`azure/login`).
+- **Scanning & SBOM**: Trivy scans the filesystem on PRs and the built image in CI. Syft generates an SBOM, which is attached to the image registry. Cosign signs the image keylessly via OIDC.
 
-# 3. Create Index & Ingest Data
-python scripts/create_index.py
-python scripts/ingest.py # Put your PDF/MD/TXT documents in data/
+### Runbook
+- **Run Locally**:
+  ```bash
+  uv venv && source .venv/bin/activate
+  uv pip install -r requirements.txt
+  cp .env.example .env # Fill in required variables
+  uvicorn app.main:app --reload
+  ```
+- **Deploy**:
+  Push to the `main` branch to trigger the `.github/workflows/cd.yml` workflow. The pipeline handles provisioning and traffic shifting automatically.
+- **Rollback**:
+  If the canary health check fails, the CD pipeline automatically halts and traffic remains on the previous revision. To manually rollback, revert the commit on `main` or use the Azure CLI to shift 100% traffic to the previous revision:
+  `az containerapp ingress traffic set -n <app-name> -g <rg> --revision <prev-rev>=100`
 
-# 4. Configure GitHub Secrets (Settings → Secrets and variables → Actions)
-# Required for CI/CD pipeline:
-# - AZURE_CREDENTIALS: JSON output from Azure Service Principal creation
-# - AZURE_SEARCH_ENDPOINT: Your Azure AI Search endpoint
-# - AZURE_SEARCH_API_KEY: Your Azure AI Search API key
-# - AZURE_SEARCH_INDEX_NAME: The name of your index
-# - OPENAI_API_KEY: Your OpenAI API key
-# - GHCR_USERNAME: Your GitHub username (for Container Registry)
-# - GHCR_TOKEN: Your GitHub PAT with read/write packages scope
-# - DD_API_KEY: Datadog API Key (for APM)
-# - DD_APP_KEY: Datadog Application Key (for Service Catalog)
-
-# 5. Run Locally
-uvicorn app.main:app --reload
-```
-
+### Lessons Learned / Trade-offs
+- **Local Embeddings vs. API**: Running `sentence-transformers` locally saves API costs but increases the container image size and memory footprint. The `all-MiniLM-L6-v2` model was selected to strike a balance between accuracy and resource usage.
+- **Serverless Cold Starts**: Azure Container Apps scale to zero, which is great for cost, but loading the embedding model into memory during a cold start adds latency. This is mitigated by setting a minimum replica count of 1 for production environments.
+- **Canary Complexity**: Implementing canary deployments requires careful state management of ACA revisions. A bash script (`deploy_canary.sh`) was chosen over complex operators to keep the pipeline transparent and easy to debug.
 
 ---
 
 <a id="中文"></a>
-## 🇨🇳 中文
+## 中文
 
-这是一个生产级标准的 Serverless RAG (检索增强生成) API。基于 FastAPI 和 Azure AI Search 构建，通过在本地运行 `sentence-transformers` 进行向量化，实现了零 Embedding API 成本。本项目不仅实现了核心算法，更展示了成熟的工程化实践，包含完整的 CI/CD 流水线、金丝雀发布以及深度的 Datadog 可观测性集成。
+### 解决什么问题 / 为什么
+运行 RAG 应用通常会产生高昂的 Embedding API 持续调用成本，且需要管理复杂的基础设施。本项目通过在 Azure Container Apps 中本地运行 `sentence-transformers`，提供了一个成本优化的 Serverless RAG 架构，并结合了 CI/CD 流水线以实现零停机部署。
 
-### ✨ 核心特性与工程亮点
+### CI/CD 流水线
+- **触发条件**: 推送至 `main` 分支触发完整 CI/CD；提交 Pull Request 触发安全扫描。
+- **产物**: 推送至 GHCR 的 Docker 镜像、SBOM (CycloneDX 格式)、Cosign 签名。
+- **Tag 策略**: 镜像使用 Git Commit SHA 作为标签 (`sha-<short_sha>`)。
+- **部署策略**: 在 Azure Container Apps 上执行金丝雀发布 (0% → 10% → 50% → 100%)，包含自动健康检查与回滚机制。
 
-- **成本优化的混合 RAG**：结合向量与关键词检索（Azure AI Search），配合本地 `all-MiniLM-L6-v2` 模型进行向量化，彻底免除 Embedding API 开销，并使用 GPT-5 进行内容生成。
-- **渐进式交付（金丝雀发布）**：在 Azure Container Apps 上实现零故障部署，支持自动流量切换 (0% → 10% → 50% → 100%)、健康检查验证及自动回滚。
-- **供应链安全**：Cosign 无密钥签名 (OIDC)、SBOM 生成 (CycloneDX) 以及 Trivy 漏洞扫描全部自动化集成在 CI 中。
-- **企业级可观测性**：深度集成 Datadog APM (`ddtrace`)，支持结构化 JSON 日志、Trace 关联、DORA 指标追踪以及 Service Catalog 同步。
+### 可观测性
+- **Datadog APM**: 集成 `ddtrace` 实现分布式追踪与结构化 JSON 日志。
+- **Service Catalog**: 在 CI 流水线中自动将 `service.datadog.yaml` 同步至 Datadog 服务目录。
+- **DORA 指标**: CD 流水线部署时向 Datadog 发送部署事件，用于追踪部署频率与交付前置时间。
 
-### 🔄 CI/CD 流水线流程
-```text
-git push main
-  └─ CI: 构建 → Trivy 扫描 → 推送 GHCR → SBOM → Cosign 签名 → Catalog 同步
-       └─ CD: Cosign 验签 → 部署 ACA → 金丝雀 (0→10→50→100%) → DORA 上报
-           └─ PR: Trivy 文件系统 + 镜像扫描（安全门禁）
-```
+### 安全性
+- **权限控制**: GitHub Actions 采用最小权限原则 (`permissions`)，例如使用 `id-token: write` 获取 Cosign OIDC token，`packages: write` 推送镜像。
+- **身份认证**: 通过 Service Principal 凭证 (`azure/login`) 与 Azure 进行认证。
+- **扫描与 SBOM**: PR 阶段使用 Trivy 扫描文件系统，CI 阶段扫描构建好的镜像。使用 Syft 生成 SBOM 并附加到镜像仓库，最后通过 Cosign (OIDC) 进行无密钥签名。
 
-### 🛠 技术栈
-- **应用层**：Python 3.12, FastAPI, Sentence-Transformers, OpenAI GPT-5
-- **云底座**：Azure Container Apps, Azure AI Search, GHCR, Docker
-- **CI/CD 与安全**：GitHub Actions, Trivy, Cosign (OIDC), Syft (SBOM)
-- **可观测性**：Datadog APM / DORA Metrics / Service Catalog
+### 运维手册 (Runbook)
+- **本地运行**:
+  ```bash
+  uv venv && source .venv/bin/activate
+  uv pip install -r requirements.txt
+  cp .env.example .env # 填入必要的环境变量
+  uvicorn app.main:app --reload
+  ```
+- **一键部署**:
+  将代码推送到 `main` 分支即可触发 `.github/workflows/cd.yml` 流水线，自动完成构建、部署和流量切换。
+- **如何回滚**:
+  如果金丝雀部署的健康检查失败，CD 流水线会自动中止，流量将保持在旧版本。若需手动回滚，可 Revert `main` 分支的 commit，或使用 Azure CLI 将 100% 流量切回上一版本：
+  `az containerapp ingress traffic set -n <app-name> -g <rg> --revision <prev-rev>=100`
 
-### 🚀 快速上手
-```bash
-# 1. 安装依赖
-uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt
-
-# 2. 配置环境变量 (.env)
-cp .env.example .env
-# 需填入: AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_API_KEY, AZURE_SEARCH_INDEX_NAME, OPENAI_API_KEY
-
-# 3. 创建索引并导入数据
-python scripts/create_index.py
-python scripts/ingest.py # 将 PDF/MD/TXT 文档放入 data/ 目录即可
-
-# 4. 配置 GitHub Secrets (Settings → Secrets and variables → Actions)
-# CI/CD 流水线必需的机密变量：
-# - AZURE_CREDENTIALS: 创建 Azure Service Principal 时的 JSON 输出
-# - AZURE_SEARCH_ENDPOINT: Azure AI Search 端点
-# - AZURE_SEARCH_API_KEY: Azure AI Search API 密钥
-# - AZURE_SEARCH_INDEX_NAME: 索引名称
-# - OPENAI_API_KEY: OpenAI API 密钥
-# - GHCR_USERNAME: GitHub 用户名（用于推送容器镜像）
-# - GHCR_TOKEN: GitHub PAT（需包含包读写权限）
-# - DD_API_KEY: Datadog API Key (用于 APM)
-# - DD_APP_KEY: Datadog Application Key (用于服务目录同步)
-
-# 5. 本地启动
-uvicorn app.main:app --reload
-```
-
+### 经验教训与权衡
+- **本地 Embedding vs API 调用**: 本地运行 `sentence-transformers` 节省了 API 成本，但增加了容器镜像体积和内存占用。架构中采用了 `all-MiniLM-L6-v2` 模型，以在准确率和资源消耗之间取得平衡。
+- **Serverless 冷启动**: Azure Container Apps 支持缩容到 0，有利于节省成本，但冷启动时将 Embedding 模型加载到内存会增加延迟。在生产环境中，通过将最小副本数设置为 1 来缓解此问题。
+- **金丝雀发布的复杂性**: 实现金丝雀发布需要仔细管理 ACA 的版本状态。方案中选择使用 Bash 脚本 (`deploy_canary.sh`) 而不是复杂的 Operator，以保持流水线的透明度和易于调试。
 
 ---
 
 <a id="日本語"></a>
-## 🇯🇵 日本語
+## 日本語
 
-本番環境レベルのサーバーレス RAG (検索拡張生成) API です。FastAPI と Azure AI Search を基盤とし、ローカルで `sentence-transformers` を実行することで、埋め込み (Embedding) API のコストをゼロに抑えています。単なる API 実装にとどまらず、完全な CI/CD パイプライン、カナリアリリース、Datadog による高度な可観測性など、スケーラブルな AI アプリケーションのための実践的なエンジニアリング手法を網羅しています。
+### 解決する課題 / 背景
+RAGアプリケーションの運用には、Embedding APIの継続的なコストと複雑なインフラ管理が伴います。本プロジェクトは、Azure Container Apps内で`sentence-transformers`をローカル実行することでコストを最適化したサーバーレスRAGアーキテクチャを提供し、ゼロダウンタイムデプロイのためのCI/CDパイプラインを組み合わせています。
 
-### ✨ 主な特徴とエンジニアリングのハイライト
+### CI/CD パイプライン
+- **トリガー**: `main`ブランチへのPush（CI/CD）、Pull Request（セキュリティスキャン）。
+- **成果物**: GHCRにプッシュされたDockerイメージ、SBOM（CycloneDX形式）、Cosign署名。
+- **Tag 戦略**: GitコミットSHA（`sha-<short_sha>`）をイメージタグとして使用。
+- **デプロイ戦略**: Azure Container Appsでのカナリアリリース（0% → 10% → 50% → 100%）。自動ヘルスチェックとロールバック機能付き。
 
-- **コスト最適化されたハイブリッド RAG**: ベクトル検索とキーワード検索（Azure AI Search）を組み合わせ、ローカルの `all-MiniLM-L6-v2` モデルを活用。埋め込み API のランニングコストを完全に排除しました。生成には GPT-5 を使用します。
-- **プログレッシブデリバリー（カナリアリリース）**: Azure Container Apps へのゼロダウンタイムデプロイ。自動トラフィック移行（0% → 10% → 50% → 100%）、ヘルスチェック、および自動ロールバック機構を備えています。
-- **サプライチェーンセキュリティ**: Cosign キーレス署名 (OIDC)、SBOM 生成 (CycloneDX)、Trivy 脆弱性スキャンを CI で完全自動化。
-- **エンタープライズ級の可観測性**: Datadog APM (`ddtrace`) との完全な統合。構造化 JSON ログ、トレース相関、DORA メトリクス追跡、Service Catalog 同期を実装しています。
+### 可観測性 (Observability)
+- **Datadog APM**: `ddtrace`を統合し、分散トレーシングと構造化JSONログを実装。
+- **Service Catalog**: CIパイプラインで`service.datadog.yaml`をDatadogサービスカタログに自動同期。
+- **DORA メトリクス**: CDパイプラインでのデプロイ時にDatadogへデプロイメントイベントを送信し、デプロイ頻度とリードタイムを追跡。
 
-### 🔄 CI/CD パイプラインフロー
-```text
-git push main
-  └─ CI: ビルド → Trivy スキャン → GHCR プッシュ → SBOM → Cosign 署名 → Catalog 同期
-       └─ CD: Cosign 検証 → ACA デプロイ → カナリア (0→10→50→100%) → DORA 送信
-           └─ PR: Trivy ファイルシステム + イメージスキャン（セキュリティゲート）
-```
+### セキュリティ
+- **権限管理**: 最小権限のGitHub Actions `permissions`を使用（例：Cosign OIDC用の`id-token: write`、GHCR用の`packages: write`）。
+- **認証**: Azureとの認証にはService Principalクレデンシャル（`azure/login`）を使用。
+- **スキャンと SBOM**: PR時にTrivyでファイルシステムをスキャンし、CIでビルド済みイメージをスキャン。SyftでSBOMを生成してイメージレジストリに添付。Cosign (OIDC) でイメージにキーレス署名。
 
-### 🛠 技術スタック
-- **アプリケーション**: Python 3.12, FastAPI, Sentence-Transformers, OpenAI GPT-5
-- **インフラストラクチャ**: Azure Container Apps, Azure AI Search, GHCR, Docker
-- **CI/CD ・ セキュリティ**: GitHub Actions, Trivy, Cosign (OIDC), Syft (SBOM)
-- **可観測性**: Datadog APM / DORA Metrics / Service Catalog
+### 運用マニュアル (Runbook)
+- **ローカル実行**:
+  ```bash
+  uv venv && source .venv/bin/activate
+  uv pip install -r requirements.txt
+  cp .env.example .env # 必要な環境変数を入力
+  uvicorn app.main:app --reload
+  ```
+- **ワンクリックデプロイ**:
+  `main`ブランチにプッシュすると`.github/workflows/cd.yml`がトリガーされ、ビルド、デプロイ、トラフィック移行が自動的に処理されます。
+- **ロールバック方法**:
+  カナリアリリースのヘルスチェックが失敗した場合、CDパイプラインは自動的に停止し、トラフィックは旧リビジョンに維持されます。手動でロールバックするには、`main`のコミットをRevertするか、Azure CLIを使用してトラフィックを100%旧リビジョンに戻します：
+  `az containerapp ingress traffic set -n <app-name> -g <rg> --revision <prev-rev>=100`
 
-### 🚀 クイックスタート
-```bash
-# 1. 依存関係のインストール
-uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt
-
-# 2. 環境変数の設定 (.env)
-cp .env.example .env
-# AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_API_KEY, AZURE_SEARCH_INDEX_NAME, OPENAI_API_KEY を設定
-
-# 3. インデックス作成とデータ取り込み
-python scripts/create_index.py
-python scripts/ingest.py # ドキュメント (PDF/MD/TXT) を data/ フォルダに配置
-
-# 4. GitHub Secrets の設定 (Settings → Secrets and variables → Actions)
-# CI/CD パイプラインに必要なシークレット：
-# - AZURE_CREDENTIALS: Azure Service Principal 作成時の JSON 出力
-# - AZURE_SEARCH_ENDPOINT: Azure AI Search エンドポイント
-# - AZURE_SEARCH_API_KEY: Azure AI Search API キー
-# - AZURE_SEARCH_INDEX_NAME: インデックス名
-# - OPENAI_API_KEY: OpenAI API キー
-# - GHCR_USERNAME: GitHub ユーザー名（コンテナレジストリ用）
-# - GHCR_TOKEN: GitHub PAT（パッケージの読み書き権限）
-# - DD_API_KEY: Datadog API Key (APM用)
-# - DD_APP_KEY: Datadog Application Key (Service Catalog同期用)
-
-# 5. ローカル実行
-uvicorn app.main:app --reload
-```
-
-
+### 得られた知見とトレードオフ
+- **ローカル Embedding vs API 呼び出し**: `sentence-transformers`のローカル実行はAPIコストを削減しますが、コンテナイメージのサイズとメモリ使用量が増加します。精度とリソース消費のバランスを取るため、`all-MiniLM-L6-v2`モデルを採用しています。
+- **Serverless コールドスタート**: Azure Container Appsはゼロスケールに対応しておりコスト面で有利ですが、コールドスタート時にEmbeddingモデルをメモリにロードするためレイテンシが増加します。緩和策として、本番環境では最小レプリカ数を1に設定しています。
+- **カナリアリリースの複雑さ**: カナリアリリースの実装にはACAリビジョンの状態管理が必要です。パイプラインの透明性とデバッグのしやすさを保つため、複雑なOperatorではなくBashスクリプト（`deploy_canary.sh`）を採用しています。

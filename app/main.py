@@ -23,10 +23,10 @@ from app.search_client import get_search_client
 
 
 # ---- Build / version metadata (injected by CI/CD) ----
-APP_VERSION = os.getenv("APP_VERSION", "2.0.0")
+APP_VERSION = os.getenv("APP_VERSION", "2.1.0")
 BUILD_SHA = os.getenv("BUILD_SHA", "unknown")
 IMAGE_TAG = os.getenv("IMAGE_TAG", "unknown")
-ENV_NAME = os.getenv("ENV_NAME", os.getenv("DD_ENV", "prod"))  # optional: dev/stg/prod
+ENV_NAME = os.getenv("ENV_NAME", os.getenv("DD_ENV", "stg"))  # optional: dev/stg/prod
 SERVICE_NAME = os.getenv("SERVICE_NAME", os.getenv("DD_SERVICE", "azure-rag-student"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 OPENAI_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "1024"))
