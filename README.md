@@ -42,7 +42,7 @@ Running RAG applications often incurs high recurring costs for embedding APIs an
 graph TD
     User -->|Query| ACA[Azure Container Apps<br>FastAPI + Local Embeddings]
     ACA -->|Vector/Keyword Search| Search[Azure AI Search]
-    ACA -->|Prompt| LLM[OpenAI GPT-4/5]
+    ACA -->|Prompt| LLM[OpenAI GPT-5]
     ACA -->|Traces/Metrics| DD[Datadog]
 ```
 
@@ -52,10 +52,15 @@ graph TD
 - **Tags**: Images are tagged with the Git commit SHA (`sha-<short_sha>`).
 - **Deployment Strategy**: Canary rollout (0% → 10% → 50% → 100%) on Azure Container Apps with automated health checks and rollback.
 
+### Observability
+- **Datadog APM**: Integrated `ddtrace` for distributed tracing and structured JSON logging.
+- **Service Catalog**: Automated sync of `service.datadog.yaml` to Datadog via CI pipeline.
+- **DORA Metrics**: Deployment events are sent to Datadog during the CD pipeline to track deployment frequency and lead time.
+
 ### Security
-- **Permissions**: Uses least-privilege GitHub Actions `permissions` (e.g., `id-token: write` for OIDC, `packages: write` for GHCR).
-- **OIDC**: Keyless authentication with Azure via OIDC (`azure/login`), eliminating long-lived credentials.
-- **Scanning & SBOM**: Trivy scans the filesystem on PRs and the built image in CI. Syft generates an SBOM, which is attached to the image registry. Cosign signs the image keylessly.
+- **Permissions**: Uses least-privilege GitHub Actions `permissions` (e.g., `id-token: write` for Cosign OIDC, `packages: write` for GHCR).
+- **Authentication**: Azure authentication uses Service Principal credentials (`azure/login`).
+- **Scanning & SBOM**: Trivy scans the filesystem on PRs and the built image in CI. Syft generates an SBOM, which is attached to the image registry. Cosign signs the image keylessly via OIDC.
 
 ### Runbook
 - **Run Locally**:
@@ -90,10 +95,15 @@ graph TD
 - **Tag 策略**: 镜像使用 Git Commit SHA 作为标签 (`sha-<short_sha>`)。
 - **部署策略**: 在 Azure Container Apps 上执行金丝雀发布 (0% → 10% → 50% → 100%)，包含自动健康检查与回滚机制。
 
+### 可观测性
+- **Datadog APM**: 集成 `ddtrace` 实现分布式追踪与结构化 JSON 日志。
+- **Service Catalog**: 在 CI 流水线中自动将 `service.datadog.yaml` 同步至 Datadog 服务目录。
+- **DORA 指标**: CD 流水线部署时向 Datadog 发送部署事件，用于追踪部署频率与交付前置时间。
+
 ### 安全性
-- **权限控制**: GitHub Actions 采用最小权限原则 (`permissions`)，例如使用 `id-token: write` 获取 OIDC token，`packages: write` 推送镜像。
-- **OIDC**: 通过 OIDC (`azure/login`) 与 Azure 进行无密钥认证，避免硬编码长期凭证。
-- **扫描与 SBOM**: PR 阶段使用 Trivy 扫描文件系统，CI 阶段扫描构建好的镜像。使用 Syft 生成 SBOM 并附加到镜像仓库，最后通过 Cosign 进行无密钥签名。
+- **权限控制**: GitHub Actions 采用最小权限原则 (`permissions`)，例如使用 `id-token: write` 获取 Cosign OIDC token，`packages: write` 推送镜像。
+- **身份认证**: 通过 Service Principal 凭证 (`azure/login`) 与 Azure 进行认证。
+- **扫描与 SBOM**: PR 阶段使用 Trivy 扫描文件系统，CI 阶段扫描构建好的镜像。使用 Syft 生成 SBOM 并附加到镜像仓库，最后通过 Cosign (OIDC) 进行无密钥签名。
 
 ### 运维手册 (Runbook)
 - **本地运行**:
@@ -128,10 +138,15 @@ RAGアプリケーションの運用には、Embedding APIの継続的なコス�
 - **Tag 戦略**: GitコミットSHA（`sha-<short_sha>`）をイメージタグとして使用。
 - **デプロイ戦略**: Azure Container Appsでのカナリアリリース（0% → 10% → 50% → 100%）。自動ヘルスチェックとロールバック機能付き。
 
+### 可観測性 (Observability)
+- **Datadog APM**: `ddtrace`を統合し、分散トレーシングと構造化JSONログを実装。
+- **Service Catalog**: CIパイプラインで`service.datadog.yaml`をDatadogサービスカタログに自動同期。
+- **DORA メトリクス**: CDパイプラインでのデプロイ時にDatadogへデプロイメントイベントを送信し、デプロイ頻度とリードタイムを追跡。
+
 ### セキュリティ
-- **権限管理**: 最小権限のGitHub Actions `permissions`を使用（例：OIDC用の`id-token: write`、GHCR用の`packages: write`）。
-- **OIDC**: OIDC（`azure/login`）を介したAzureとのキーレス認証。長期的なクレデンシャルを排除。
-- **スキャンと SBOM**: PR時にTrivyでファイルシステムをスキャンし、CIでビルド済みイメージをスキャン。SyftでSBOMを生成してイメージレジストリに添付。Cosignでイメージにキーレス署名。
+- **権限管理**: 最小権限のGitHub Actions `permissions`を使用（例：Cosign OIDC用の`id-token: write`、GHCR用の`packages: write`）。
+- **認証**: Azureとの認証にはService Principalクレデンシャル（`azure/login`）を使用。
+- **スキャンと SBOM**: PR時にTrivyでファイルシステムをスキャンし、CIでビルド済みイメージをスキャン。SyftでSBOMを生成してイメージレジストリに添付。Cosign (OIDC) でイメージにキーレス署名。
 
 ### 運用マニュアル (Runbook)
 - **ローカル実行**:
