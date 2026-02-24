@@ -84,15 +84,6 @@ graph TD
 ### 解决什么问题 / 为什么
 运行 RAG 应用通常会产生高昂的 Embedding API 持续调用成本，且需要管理复杂的基础设施。本项目通过在 Azure Container Apps 中本地运行 `sentence-transformers`，提供了一个成本优化的 Serverless RAG 架构，并结合了 CI/CD 流水线以实现零停机部署。
 
-### 架构图
-```mermaid
-graph TD
-    User -->|Query| ACA[Azure Container Apps<br>FastAPI + Local Embeddings]
-    ACA -->|Vector/Keyword Search| Search[Azure AI Search]
-    ACA -->|Prompt| LLM[OpenAI GPT-4/5]
-    ACA -->|Traces/Metrics| DD[Datadog]
-```
-
 ### CI/CD 流水线
 - **触发条件**: 推送至 `main` 分支触发完整 CI/CD；提交 Pull Request 触发安全扫描。
 - **产物**: 推送至 GHCR 的 Docker 镜像、SBOM (CycloneDX 格式)、Cosign 签名。
@@ -130,15 +121,6 @@ graph TD
 
 ### 解決する課題 / 背景
 RAGアプリケーションの運用には、Embedding APIの継続的なコストと複雑なインフラ管理が伴います。本プロジェクトは、Azure Container Apps内で`sentence-transformers`をローカル実行することでコストを最適化したサーバーレスRAGアーキテクチャを提供し、ゼロダウンタイムデプロイのためのCI/CDパイプラインを組み合わせています。
-
-### アーキテクチャ図
-```mermaid
-graph TD
-    User -->|Query| ACA[Azure Container Apps<br>FastAPI + Local Embeddings]
-    ACA -->|Vector/Keyword Search| Search[Azure AI Search]
-    ACA -->|Prompt| LLM[OpenAI GPT-4/5]
-    ACA -->|Traces/Metrics| DD[Datadog]
-```
 
 ### CI/CD パイプライン
 - **トリガー**: `main`ブランチへのPush（CI/CD）、Pull Request（セキュリティスキャン）。

@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Free disk space
         run: |
@@ -42,7 +42,7 @@ jobs:
       # ========== Step 1: Scan dependencies (filesystem) ==========
       # ========== ステップ 1: 依存関係のスキャン（ファイルシステム） ==========
       - name: Run Trivy vulnerability scanner (filesystem)
-        uses: aquasecurity/trivy-action@0.32.0
+        uses: aquasecurity/trivy-action@0.34.1
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -54,7 +54,7 @@ jobs:
       # Upload results to GitHub Security tab
       # 結果を GitHub セキュリティタブにアップロード
       - name: Upload filesystem scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'trivy-fs-results.sarif'
           category: 'trivy-filesystem'
@@ -62,7 +62,7 @@ jobs:
       # ========== Step 2: Build image locally for scanning ==========
       # ========== ステップ 2: スキャン用にイメージをローカルビルド ==========
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v3.12.0
 
       - name: Build Docker image for scanning
         uses: docker/build-push-action@v6
@@ -79,7 +79,7 @@ jobs:
       # ========== Step 3: Scan container image (OS + library) ==========
       # ========== ステップ 3: コンテナイメージのスキャン（OS + ライブラリ） ==========
       - name: Run Trivy vulnerability scanner (image)
-        uses: aquasecurity/trivy-action@0.32.0
+        uses: aquasecurity/trivy-action@0.34.1
         with:
           scan-type: 'image'
           image-ref: 'security-scan:${{ github.sha }}'
@@ -89,7 +89,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload image scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'trivy-image-results.sarif'
           category: 'trivy-container'
@@ -97,7 +97,7 @@ jobs:
       # ========== Step 4: Gate - fail on HIGH/CRITICAL vulnerabilities ==========
       # ========== ステップ 4: ゲート - HIGH/CRITICAL 脆弱性があれば PR をブロック ==========
       - name: Check for critical vulnerabilities
-        uses: aquasecurity/trivy-action@0.32.0
+        uses: aquasecurity/trivy-action@0.34.1
         with:
           scan-type: 'image'
           image-ref: 'security-scan:${{ github.sha }}'

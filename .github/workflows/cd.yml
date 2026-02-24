@@ -39,7 +39,7 @@ jobs:
       # CI の成果物からダイジェストをダウンロード
       - name: Download image digest from CI
         if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7.0.0
         with:
           name: image-digest
           run-id: ${{ github.event.workflow_run.id }}
@@ -65,7 +65,7 @@ jobs:
       # Log in to GHCR (required for cosign verify and digest resolution)
       # GHCR にログイン（cosign 検証とダイジェスト解決に必要）
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ steps.ghcr-creds.outputs.username }}
@@ -112,7 +112,9 @@ jobs:
       # Verify image signature before deployment (supply chain security)
       # デプロイ前にイメージ署名を検証（サプライチェーンセキュリティ）
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3.8.2
+        uses: sigstore/cosign-installer@v4.0.0
+        with:
+          cosign-release: 'v3.0.5'
 
       - name: Verify image signature (Cosign)
         env:
@@ -174,7 +176,7 @@ jobs:
       # Canary rollout: 0% smoke test → 10% → 50% → 100%
       # カナリアリリース: 0% スモークテスト → 10% → 50% → 100%
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Canary rollout logic
         env:
