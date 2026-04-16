@@ -98,7 +98,7 @@ jobs:
       # 2) Trivy gate: fail on HIGH/CRITICAL vulnerabilities
       # 2) Trivy ゲート: HIGH/CRITICAL 脆弱性があればビルドを失敗させる
       - name: Trivy image scan (gate)
-        uses: aquasecurity/trivy-action@0.34.1
+        uses: aquasecurity/trivy-action@master
         with:
           scan-type: image
           image-ref: ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
