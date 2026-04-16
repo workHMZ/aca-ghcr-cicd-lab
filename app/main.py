@@ -23,7 +23,7 @@ from app.search_client import get_search_client
 
 
 # ---- Build / version metadata (injected by CI/CD) ----
-APP_VERSION = os.getenv("APP_VERSION", "2.1.0")
+APP_VERSION = os.getenv("APP_VERSION", "2.1.1")
 BUILD_SHA = os.getenv("BUILD_SHA", "unknown")
 IMAGE_TAG = os.getenv("IMAGE_TAG", "unknown")
 ENV_NAME = os.getenv("ENV_NAME", os.getenv("DD_ENV", "stg"))  # optional: dev/stg/prod
