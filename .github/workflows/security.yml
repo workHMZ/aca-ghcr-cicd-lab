@@ -42,7 +42,7 @@ jobs:
       # ========== Step 1: Scan dependencies (filesystem) ==========
       # ========== ステップ 1: 依存関係のスキャン（ファイルシステム） ==========
       - name: Run Trivy vulnerability scanner (filesystem)
-        uses: aquasecurity/trivy-action@0.34.1
+        uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -79,7 +79,7 @@ jobs:
       # ========== Step 3: Scan container image (OS + library) ==========
       # ========== ステップ 3: コンテナイメージのスキャン（OS + ライブラリ） ==========
       - name: Run Trivy vulnerability scanner (image)
-        uses: aquasecurity/trivy-action@0.34.1
+        uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'image'
           image-ref: 'security-scan:${{ github.sha }}'
@@ -97,7 +97,7 @@ jobs:
       # ========== Step 4: Gate - fail on HIGH/CRITICAL vulnerabilities ==========
       # ========== ステップ 4: ゲート - HIGH/CRITICAL 脆弱性があれば PR をブロック ==========
       - name: Check for critical vulnerabilities
-        uses: aquasecurity/trivy-action@0.34.1
+        uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'image'
           image-ref: 'security-scan:${{ github.sha }}'
