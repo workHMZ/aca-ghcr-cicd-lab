@@ -30,7 +30,7 @@ on:
       - 'requirements*.txt'
       - '.env.example'
   schedule:
-    - cron: '23 20 * * 1'
+    - cron: '23 20 1 * *'
       timezone: 'Asia/Tokyo'
   workflow_dispatch:
 

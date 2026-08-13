@@ -143,9 +143,11 @@ jobs:
           image_tag="sha-${GITHUB_SHA}"
           app_version=$(sed -n 's/^__version__ *= *"\([^"]*\)"/\1/p' app/__init__.py)
           test -n "$app_version"
-          echo "image_repo=$image_repo" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
-          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          {
+            echo "image_repo=$image_repo"
+            echo "image_tag=$image_tag"
+            echo "app_version=$app_version"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -243,12 +245,14 @@ jobs:
 
       - name: Summary
         run: |
-          echo '### CI complete' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Quality: ruff, mypy, pytest, pip-audit, Terraform validation' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Image: `${{ steps.image.outputs.image_repo }}:${{ steps.image.outputs.image_tag }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Digest: `${{ steps.build.outputs.digest }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Supply chain: exact-digest Trivy scan, SBOM, signature, and attestation' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Promotion: `latest` now points to the verified digest' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '### CI complete'
+            echo '- Quality: ruff, mypy, pytest, pip-audit, Terraform validation'
+            echo "- Image: \`${{ steps.image.outputs.image_repo }}:${{ steps.image.outputs.image_tag }}\`"
+            echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo '- Supply chain: exact-digest Trivy scan, SBOM, signature, and attestation'
+            echo '- Promotion: `latest` now points to the verified digest'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # This is the deployment-authorization signature. Keep it after every
       # mandatory scan, attestation, artifact, promotion, and summary step so a

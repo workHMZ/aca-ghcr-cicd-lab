@@ -90,11 +90,13 @@ jobs:
             exit 1
           fi
 
-          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
-          echo "image_repo=$image_repo" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
-          echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
-          echo "image_url=$image_repo@$image_digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "commit_sha=$commit_sha"
+            echo "image_repo=$image_repo"
+            echo "image_tag=$image_tag"
+            echo "image_digest=$image_digest"
+            echo "image_url=$image_repo@$image_digest"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
@@ -293,17 +295,21 @@ jobs:
       - name: Deployment summary
         if: success()
         run: |
-          echo '### CD complete' >> "$GITHUB_STEP_SUMMARY"
-          echo '- App: `${{ env.AZURE_CONTAINER_APP_NAME }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Image: `${{ steps.image.outputs.image_repo }}@${{ steps.image.outputs.image_digest }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Commit: `${{ steps.image.outputs.commit_sha }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Strategy: real query at 0%, verified 10%/50% weights, real query at 100%' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Signature: exact workflow identity, main ref, and commit SHA verified' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '### CD complete'
+            echo "- App: \`${{ env.AZURE_CONTAINER_APP_NAME }}\`"
+            echo "- Image: \`${{ steps.image.outputs.image_repo }}@${{ steps.image.outputs.image_digest }}\`"
+            echo "- Commit: \`${{ steps.image.outputs.commit_sha }}\`"
+            echo '- Strategy: real query at 0%, verified 10%/50% weights, real query at 100%'
+            echo '- Signature: exact workflow identity, main ref, and commit SHA verified'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deployment failure summary
         if: failure()
         run: |
-          echo '### CD failed' >> "$GITHUB_STEP_SUMMARY"
-          echo '- App: `${{ env.AZURE_CONTAINER_APP_NAME }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Candidate: `${{ steps.image.outputs.image_url }}`' >> "$GITHUB_STEP_SUMMARY"
-          echo '- The canary script attempts automatic rollback after traffic is armed.' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '### CD failed'
+            echo "- App: \`${{ env.AZURE_CONTAINER_APP_NAME }}\`"
+            echo "- Candidate: \`${{ steps.image.outputs.image_url }}\`"
+            echo '- The canary script attempts automatic rollback after traffic is armed.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -3,8 +3,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: '09:00'
       timezone: Asia/Tokyo
     open-pull-requests-limit: 5
@@ -15,8 +14,7 @@ updates:
   - package-ecosystem: uv
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: '09:15'
       timezone: Asia/Tokyo
     open-pull-requests-limit: 5
@@ -27,8 +25,7 @@ updates:
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: '09:30'
       timezone: Asia/Tokyo
     open-pull-requests-limit: 5
@@ -36,8 +33,7 @@ updates:
   - package-ecosystem: terraform
     directory: /terraform
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: '09:45'
       timezone: Asia/Tokyo
     open-pull-requests-limit: 5
