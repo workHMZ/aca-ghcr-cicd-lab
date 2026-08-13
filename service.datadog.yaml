@@ -6,10 +6,11 @@ contacts:
     contact: workHMZ@github
 application: serverless-rag-api
 description: >-
-  RAG API using Azure AI Search with local sentence-transformers embedding.
-  Deployed on Azure Container Apps with Datadog APM monitoring.
+  Multilingual RAG API using Azure AI Search, pinned local E5 embeddings,
+  and OpenAI Responses API. Deployed on Azure Container Apps; Datadog APM
+  and catalog automation are enabled only when credentials are configured.
 tier: Tier 3
-lifecycle: production
+lifecycle: staging
 languages:
   - python
 type: web
@@ -29,5 +30,6 @@ links:
 ci-cd-pipeline: https://github.com/workHMZ/aca-ghcr-cicd-lab/actions
 tags:
   - env:stg
+  - version:3.0.0
   - cloud:azure
   - region:japaneast

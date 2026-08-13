@@ -1,208 +1,466 @@
-# Serverless RAG API
+# Serverless Multilingual RAG on Azure
 
-[English](#english) | [中文](#中文) | [日本語](#日本語)
+[![CI](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/ci.yml)
+[![Security](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/security.yml/badge.svg)](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/security.yml)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB.svg)](https://www.python.org/)
+[![Version 3.0.0](https://img.shields.io/badge/version-3.0.0-6f42c1.svg)](#release-state)
 
-## Project Structure
+FastAPI + pinned multilingual embeddings + Azure AI Search hybrid retrieval +
+OpenAI Responses API, designed for a signed Azure Container Apps canary.
 
-```text
-├── app/
-│   ├── __init__.py                        # Package version
-│   ├── main.py                            # FastAPI application + Datadog JSON logging
-│   ├── embed.py                           # Sentence-transformers embedding (384-dim)
-│   └── search_client.py                   # Azure AI Search client factory
-├── scripts/
-│   ├── create_index.py                    # Create Azure AI Search index (HNSW)
-│   ├── ingest.py                          # Document ingestion (PDF/MD/TXT → chunks)
-│   ├── clear_index.py                     # Clear all documents from index
-│   ├── deploy_canary.sh                   # Canary rollout logic (0→10→50→100%)
-│   ├── setup-azure.sh                     # Azure infrastructure provisioning
-│   ├── test_api.py                        # API smoke test
-│   ├── sync_datadog_catalog.sh            # Datadog Service Catalog sync
-│   └── send_datadog_dora_deployment.sh    # Datadog DORA deployment event
-├── .github/workflows/
-│   ├── ci.yml                             # Build → Trivy → SBOM → Cosign → GHCR
-│   ├── cd.yml                             # Canary Deploy → ACA → DORA Metrics
-│   └── security.yml                       # Trivy vulnerability scan (PR gate)
-├── terraform/
-│   ├── versions.tf                        # Provider version constraints
-│   ├── variables.tf                       # Input variables
-│   ├── main.tf                            # RG + Log Analytics + CAE + Container App
-│   ├── service_principal.tf               # Service Principal + Role Assignment
-│   └── outputs.tf                         # App URL + SP credentials
-├── data/                                  # Source documents (PDF/MD/TXT)
-├── service.datadog.yaml                   # Datadog Service Catalog metadata
-├── Dockerfile                             # Multi-stage build (ddtrace-run)
-└── requirements.txt
-```
+> **Release state:** the repository contains the local 3.0.0 release candidate.
+> The Azure snapshot recorded on 2026-08-13 was still the 2.x deployment using
+> the legacy ragdocs index. Creating ragdocs-v3, re-embedding the corpus,
+> pushing the tag, and deploying remain explicit maintainer actions.
 
----
+[中文摘要](#中文摘要) · [Architecture](#architecture) ·
+[Measured results](#measured-results) · [Quick start](#quick-start) ·
+[2.x → 3.0 migration](#2x--30-index-migration) ·
+[面试讲解](INTERVIEW_GUIDE.md) · [Security policy](SECURITY.md)
 
-<a id="english"></a>
+## 中文摘要
 
-## English
+这是一个面向面试演示的 Azure 多语言 RAG 项目。3.0 不只是把生成模型改成
+gpt-5.6-terra，而是修复了旧版检索链路的根因：
 
-### What problem / Why
+- 将英语导向的 all-MiniLM-L6-v2 替换为固定 commit 的
+  intfloat/multilingual-e5-small；
+- 查询使用 query: 前缀，文档使用 passage: 前缀，并对两侧向量归一化；
+- 按 tokenizer 做 384/48 token 分块，保存页码、chunk、内容哈希和模型 revision；
+- 使用独立 ragdocs-v3 索引，避免新旧 384 维向量在不兼容的空间中混用；
+- 使用关键词 + HNSW + Azure semantic ranker 的混合检索；
+- 通过 OpenAI Responses API 返回结构化答案、引用、grounded 状态和 usage；
+- 增加离线 retrieval eval、测试/覆盖率/依赖审计、锁文件、非 root 容器、
+  SBOM、Cosign 和真实 RAG 金丝雀检查。
 
-Running RAG applications often incurs high recurring costs for embedding APIs and requires managing complex infrastructure. This project provides a cost-optimized, serverless RAG architecture by running `sentence-transformers` locally within Azure Container Apps, combined with a CI/CD pipeline for zero-downtime deployments.
+完整的 30 秒、2 分钟和 5 分钟面试陈述见
+[INTERVIEW_GUIDE.md](INTERVIEW_GUIDE.md)。
 
-### Architecture
+## Why this project
 
-```mermaid
-graph TD
-    User -->|Query| ACA[Azure Container Apps<br>FastAPI + Local Embeddings]
-    ACA -->|Vector/Keyword Search| Search[Azure AI Search]
-    ACA -->|Prompt| LLM[OpenAI GPT-5.4]
-    ACA -->|Traces/Metrics| DD[Datadog]
-```
+The 2.x application could produce fluent answers, but fluent generation did
+not prove that retrieval was correct. Its English-oriented embedding model,
+fixed-character chunks, missing overlap and page metadata, and legacy index
+made Chinese/Japanese retrieval difficult to diagnose.
 
-### CI/CD Pipeline
+Version 3.0 treats retrieval quality, reproducibility, and delivery safety as
+one system:
 
-- **Triggers**: Push to `main` branch (CI/CD), Pull Requests (Security Scan).
-- **Artifacts**: Docker image pushed to GitHub Container Registry (GHCR), SBOM (CycloneDX format), Cosign signature.
-- **Tags**: Images are tagged with the Git commit SHA (`sha-<short_sha>`).
-- **Deployment Strategy**: Canary rollout (0% → 10% → 50% → 100%) on Azure Container Apps with automated health checks and rollback.
+1. **Measured retrieval** — a reproducible multilingual fixture separates
+   embedding quality from answer-generation quality.
+2. **Versioned data plane** — model revision, chunk metadata, stable IDs, and a
+   new index prevent silent embedding-space mismatches.
+3. **Grounded generation** — Terra receives numbered, untrusted contexts and
+   returns a validated schema with citations.
+4. **Verifiable delivery** — one immutable image digest is scanned, attested,
+   signed, verified, and rolled out through 0/10/50/100% traffic gates.
 
-### Observability
+## Architecture
 
-- **Datadog APM**: Integrated `ddtrace` for distributed tracing and structured JSON logging.
-- **Service Catalog**: Automated sync of `service.datadog.yaml` to Datadog via CI pipeline.
-- **DORA Metrics**: Deployment events are sent to Datadog during the CD pipeline to track deployment frequency and lead time.
+### Data plane
 
-### Security
+~~~mermaid
+flowchart LR
+    subgraph Ingestion["Versioned ingestion"]
+        Docs["PDF / Markdown / text"] --> Chunk["Tokenizer-aware chunks<br/>page + stable ID + content hash"]
+        Chunk --> Passage["E5 passage: embedding<br/>normalized, 384 dimensions"]
+        Passage --> Index["Azure AI Search<br/>ragdocs-v3"]
+    end
 
-- **Permissions**: Uses least-privilege GitHub Actions `permissions` (e.g., `id-token: write` for Cosign OIDC, `packages: write` for GHCR).
-- **Authentication**: Azure authentication uses Service Principal credentials (`azure/login`).
-- **Scanning & SBOM**: Trivy scans the filesystem on PRs and the built image in CI. Syft generates an SBOM, which is attached to the image registry. Cosign signs the image keylessly via OIDC.
+    subgraph Query["Online query"]
+        User["Client"] --> API["FastAPI on Azure Container Apps"]
+        API --> QueryVec["E5 query: embedding"]
+        QueryVec --> Hybrid["Keyword + HNSW + semantic hybrid"]
+        Index --> Hybrid
+        Hybrid --> Context["Numbered contexts<br/>source + page + chunk"]
+        Context --> Terra["OpenAI gpt-5.6-terra<br/>Responses structured output"]
+        Terra --> Result["Answer + citations + grounded + usage"]
+        Result --> User
+    end
+~~~
 
-### Runbook
+The embedding model and generator have separate responsibilities. Terra does
+not generate vectors, and replacing Terra cannot repair poor retrieval.
 
-- **Run Locally**:
-  ```bash
-  uv venv && source .venv/bin/activate
-  uv pip install -r requirements.txt
-  cp .env.example .env # Fill in required variables
-  uvicorn app.main:app --reload
-  ```
-- **Provision Infrastructure**:
-  ```bash
-  cd terraform && terraform init && terraform apply
-  ```
-- **Deploy**:
-  Push to the `main` branch to trigger the `.github/workflows/cd.yml` workflow. The pipeline handles provisioning and traffic shifting automatically.
-- **Rollback**:
-  If the canary health check fails, the CD pipeline automatically halts and traffic remains on the previous revision. To manually rollback, revert the commit on `main` or use the Azure CLI to shift 100% traffic to the previous revision:
-  `az containerapp ingress traffic set -n <app-name> -g <rg> --revision <prev-rev>=100`
+### Delivery plane
 
-### Lessons Learned / Trade-offs
+~~~mermaid
+flowchart LR
+    PR["Pull request"] --> Quality["Ruff + Mypy + Pytest<br/>pip-audit + Terraform validate"]
+    Quality --> Build["Build immutable image once"]
+    Build --> Candidate["GHCR immutable SHA digest"]
+    Candidate --> Scan["Trivy exact digest"]
+    Scan --> Evidence["CycloneDX SBOM<br/>Cosign attestation"]
+    Evidence --> Promote["Upload evidence<br/>promote digest to latest"]
+    Promote --> Authorize["Final deployment-authorization<br/>Cosign signature"]
+    Authorize --> Verify["Verify signature + attestation<br/>ci.yml@main identity"]
+    Verify --> Canary["ACA candidate at 0%<br/>health + warmup + real query"]
+    Canary --> Traffic["10% → 50% → 100%<br/>weight verification"]
+    Traffic --> Stable["Stable revision"]
+    Canary -. "failure / cancellation" .-> Rollback["Restore previous revision"]
+~~~
 
-- **Local Embeddings vs. API**: Running `sentence-transformers` locally saves API costs but increases the container image size and memory footprint. The `all-MiniLM-L6-v2` model was selected to strike a balance between accuracy and resource usage.
-- **Serverless Cold Starts**: Azure Container Apps scale to zero, which is great for cost, but loading the embedding model into memory during a cold start adds latency. This is mitigated by setting a minimum replica count of 1 for production environments.
-- **Canary Complexity**: Implementing canary deployments requires careful state management of ACA revisions. A bash script (`deploy_canary.sh`) was chosen over complex operators to keep the pipeline transparent and easy to debug.
+Datadog APM, Service Catalog sync, and DORA events are optional and only run
+when their credentials are configured.
 
----
+## Model decisions
 
-<a id="中文"></a>
+| Component | 2.x baseline | 3.0 decision | Reason / trade-off |
+|---|---|---|---|
+| Embedding | all-MiniLM-L6-v2 | intfloat/multilingual-e5-small at 614241f622f53c4eeff9890bdc4f31cfecc418b3 | Multilingual retrieval, 384 dimensions, local inference; larger image and cold start |
+| Generator | gpt-5.4-mini in the observed Azure revision | gpt-5.6-terra, reasoning low | Better grounded multilingual synthesis and Structured Outputs; higher latency/cost must be measured |
+| Index | ragdocs | ragdocs-v3 | A new embedding model requires a new vector space even when both output 384 dimensions |
+| Retrieval | legacy exact-vector baseline | keyword + non-exhaustive HNSW + semantic ranker | Keeps exact technical terms while adding multilingual semantic recall |
 
-## 中文
+The Terra model ID was verified against the configured OpenAI account and with
+a synthetic Responses Structured Outputs call. The runtime model remains
+configurable through OPENAI_MODEL so a separately evaluated fallback can be
+used for quota, latency, or cost reasons.
 
-### 解决什么问题 / 为什么
+Why not BGE-M3? It is capable and multilingual, but its 1024-dimensional dense
+vectors and much larger weights do not fit this small scale-to-zero design as
+comfortably. E5-small is a deliberate resource/quality compromise, not a claim
+that it wins every corpus.
 
-运行 RAG 应用通常会产生高昂的 Embedding API 持续调用成本，且需要管理复杂的基础设施。本项目通过在 Azure Container Apps 中本地运行 `sentence-transformers`，提供了一个成本优化的 Serverless RAG 架构，并结合了 CI/CD 流水线以实现零停机部署。
+## How retrieval works
 
-### CI/CD 流水线
+Ingestion reads PDF files page by page and Markdown/text by document. Chunks
+respect paragraph boundaries where possible, then use the embedding tokenizer
+with a 384-token target and 48-token overlap. Each record includes:
 
-- **触发条件**: 推送至 `main` 分支触发完整 CI/CD；提交 Pull Request 触发安全扫描。
-- **产物**: 推送至 GHCR 的 Docker 镜像、SBOM (CycloneDX 格式)、Cosign 签名。
-- **Tag 策略**: 镜像使用 Git Commit SHA 作为标签 (`sha-<short_sha>`)。
-- **部署策略**: 在 Azure Container Apps 上执行金丝雀发布 (0% → 10% → 50% → 100%)，包含自动健康检查与回滚机制。
+- source and page number;
+- stable chunk index and SHA-256-derived document ID;
+- content hash;
+- embedding model and immutable revision;
+- the source file's UTC modification timestamp.
 
-### 可观测性
+Uploads are batched and idempotent through merge-or-upload; each source is then
+synchronized so stale tail chunks from a shortened file are deleted. The index uses
+cosine HNSW and a semantic configuration over content/source. Online queries
+create at least 50 vector candidates before returning the configured top K.
 
-- **Datadog APM**: 集成 `ddtrace` 实现分布式追踪与结构化 JSON 日志。
-- **Service Catalog**: 在 CI 流水线中自动将 `service.datadog.yaml` 同步至 Datadog 服务目录。
-- **DORA 指标**: CD 流水线部署时向 Datadog 发送部署事件，用于追踪部署频率与交付前置时间。
+Deleting an entire source file from data does not automatically discover its
+old namespace. For exact corpus replacement, ingest into a fresh versioned
+index (the 3.0 migration path) or explicitly clear/delete the old source first.
 
-### 安全性
+The generator is instructed to treat retrieved text as untrusted evidence, use
+only that evidence, cite valid one-based context numbers, and refuse when the
+evidence is insufficient. Prompting reduces risk but cannot eliminate prompt
+injection.
 
-- **权限控制**: GitHub Actions 采用最小权限原则 (`permissions`)，例如使用 `id-token: write` 获取 Cosign OIDC token，`packages: write` 推送镜像。
-- **身份认证**: 通过 Service Principal 凭证 (`azure/login`) 与 Azure 进行认证。
-- **扫描与 SBOM**: PR 阶段使用 Trivy 扫描文件系统，CI 阶段扫描构建好的镜像。使用 Syft 生成 SBOM 并附加到镜像仓库，最后通过 Cosign (OIDC) 进行无密钥签名。
+Before generation, runtime retrieval rejects any hit whose embedding model or
+revision differs from the pinned E5 configuration. The prompt includes source,
+page, and chunk metadata and wraps each retrieved body in an explicit untrusted
+context boundary.
 
-### 运维手册 (Runbook)
+## Measured results
 
-- **本地运行**:
-  ```bash
-  uv venv && source .venv/bin/activate
-  uv pip install -r requirements.txt
-  cp .env.example .env # 填入必要的环境变量
-  uvicorn app.main:app --reload
-  ```
-- **基础设施构建**:
-  ```bash
-  cd terraform && terraform init && terraform apply
-  ```
-- **一键部署**:
-  将代码推送到 `main` 分支即可触发 `.github/workflows/cd.yml` 流水线，自动完成构建、部署和流量切换。
-- **如何回滚**:
-  如果金丝雀部署的健康检查失败，CD 流水线会自动中止，流量将保持在旧版本。若需手动回滚，可 Revert `main` 分支的 commit，或使用 Azure CLI 将 100% 流量切回上一版本：
-  `az containerapp ingress traffic set -n <app-name> -g <rg> --revision <prev-rev>=100`
+### Reproducible synthetic retrieval fixture
 
-### 经验教训与权衡
+The bundled fixture contains 6 labelled ZH/JA/EN queries and 9 passages. It
+executes real local model inference; it is a regression/ablation fixture, not a
+measurement of the private PDF corpus.
 
-- **本地 Embedding vs API 调用**: 本地运行 `sentence-transformers` 节省了 API 成本，但增加了容器镜像体积和内存占用。架构中采用了 `all-MiniLM-L6-v2` 模型，以在准确率和资源消耗之间取得平衡。
-- **Serverless 冷启动**: Azure Container Apps 支持缩容到 0，有利于节省成本，但冷启动时将 Embedding 模型加载到内存会增加延迟。在生产环境中，通过将最小副本数设置为 1 来缓解此问题。
-- **金丝雀发布的复杂性**: 实现金丝雀发布需要仔细管理 ACA 的版本状态。方案中选择使用 Bash 脚本 (`deploy_canary.sh`) 而不是复杂的 Operator，以保持流水线的透明度和易于调试。
+| Model | Overall Recall@1 | Recall@3 | MRR | JA Recall@1 | JA MRR |
+|---|---:|---:|---:|---:|---:|
+| all-MiniLM-L6-v2 baseline | 0.833333 | 1.000000 | 0.916667 | 0.500000 | 0.750000 |
+| multilingual-e5-small | 1.000000 | 1.000000 | 1.000000 | 1.000000 | 1.000000 |
+| Candidate minus baseline | +0.166667 | 0.000000 | +0.083333 | +0.500000 | +0.250000 |
 
----
+Reproduce the comparison:
 
-<a id="日本語"></a>
+~~~bash
+uv sync --frozen --dev
+uv run python scripts/evaluate_retrieval.py \
+  --backend local \
+  --model sentence-transformers/all-MiniLM-L6-v2 \
+  --revision 1110a243fdf4706b3f48f1d95db1a4f5529b4d41 \
+  --model intfloat/multilingual-e5-small \
+  --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3
+~~~
 
-## 日本語
+### Local engineering gates
 
-### 解決する課題 / 背景
+The final local verification records:
 
-RAGアプリケーションの運用には、Embedding APIの継続的なコストと複雑なインフラ管理が伴います。本プロジェクトは、Azure Container Apps内で`sentence-transformers`をローカル実行することでコストを最適化したサーバーレスRAGアーキテクチャを提供し、ゼロダウンタイムデプロイのためのCI/CDパイプラインを組み合わせています。
+- 26 tests passed;
+- 83.30% branch-aware application coverage;
+- Ruff formatting/lint and strict Mypy passed;
+- locked runtime dependency audit reported no known vulnerabilities;
+- E5 emitted normalized 384-dimensional query/passage vectors;
+- measured E5 load/inference maximum resident memory was about 915 MiB on the
+  development machine, making the 2 GiB app target a minimum rather than a
+  generous allocation.
 
-### CI/CD パイプライン
+The private Java PDF was only dry-chunked locally: 282 pages became 498 chunks.
+It was not uploaded, committed, or sent to OpenAI. A credible production claim
+still requires a manually reviewed 60–100 question golden set over that corpus,
+including unanswerable and multi-hop cases.
 
-- **トリガー**: `main`ブランチへのPush（CI/CD）、Pull Request（セキュリティスキャン）。
-- **成果物**: GHCRにプッシュされたDockerイメージ、SBOM（CycloneDX形式）、Cosign署名。
-- **Tag 戦略**: GitコミットSHA（`sha-<short_sha>`）をイメージタグとして使用。
-- **デプロイ戦略**: Azure Container Appsでのカナリアリリース（0% → 10% → 50% → 100%）。自動ヘルスチェックとロールバック機能付き。
+## Project layout
 
-### 可観測性 (Observability)
+~~~text
+app/
+  config.py           validated runtime settings
+  chunking.py         tokenizer-aware paragraph chunking
+  embed.py            pinned E5 query/passage embeddings
+  search_client.py    cached Azure Search client
+  main.py             async FastAPI + structured Terra generation
+eval/
+  corpus.jsonl        small multilingual synthetic corpus
+  golden.jsonl        labelled retrieval queries
+scripts/
+  create_index.py     safe versioned index creation
+  ingest.py           idempotent page-aware ingestion
+  evaluate_retrieval.py
+  deploy_canary.sh    verified rollout and rollback
+tests/                application unit and contract tests
+terraform/            existing-environment reconciliation and ACA target state
+.github/workflows/    quality, supply-chain, security, and CD gates
+~~~
 
-- **Datadog APM**: `ddtrace`を統合し、分散トレーシングと構造化JSONログを実装。
-- **Service Catalog**: CIパイプラインで`service.datadog.yaml`をDatadogサービスカタログに自動同期。
-- **DORA メトリクス**: CDパイプラインでのデプロイ時にDatadogへデプロイメントイベントを送信し、デプロイ頻度とリードタイムを追跡。
+## Quick start
 
-### セキュリティ
+### Requirements
 
-- **権限管理**: 最小権限のGitHub Actions `permissions`を使用（例：Cosign OIDC用の`id-token: write`、GHCR用の`packages: write`）。
-- **認証**: Azureとの認証にはService Principalクレデンシャル（`azure/login`）を使用。
-- **スキャンと SBOM**: PR時にTrivyでファイルシステムをスキャンし、CIでビルド済みイメージをスキャン。SyftでSBOMを生成してイメージレジストリに添付。Cosign (OIDC) でイメージにキーレス署名。
+- Python 3.12.13 and uv 0.11.16;
+- an OpenAI API key with access to the configured generator;
+- an Azure AI Search service and admin key;
+- Azure CLI/Terraform only for infrastructure or deployment work.
 
-### 運用マニュアル (Runbook)
+Install the locked environment:
 
-- **ローカル実行**:
-  ```bash
-  uv venv && source .venv/bin/activate
-  uv pip install -r requirements.txt
-  cp .env.example .env # 必要な環境変数を入力
-  uvicorn app.main:app --reload
-  ```
-- **インフラ構築**:
-  ```bash
-  cd terraform && terraform init && terraform apply
-  ```
-- **ワンクリックデプロイ**:
-  `main`ブランチにプッシュすると`.github/workflows/cd.yml`がトリガーされ、ビルド、デプロイ、トラフィック移行が自動的に処理されます。
-- **ロールバック方法**:
-  カナリアリリースのヘルスチェックが失敗した場合、CDパイプラインは自動的に停止し、トラフィックは旧リビジョンに維持されます。手動でロールバックするには、`main`のコミットをRevertするか、Azure CLIを使用してトラフィックを100%旧リビジョンに戻します：
-  `az containerapp ingress traffic set -n <app-name> -g <rg> --revision <prev-rev>=100`
+~~~bash
+uv python install 3.12.13
+uv sync --frozen --dev
+cp .env.example .env
+~~~
 
-### 得られた知見とトレードオフ
+Fill AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_API_KEY, and OPENAI_API_KEY in the
+ignored .env file. Do not commit it.
 
-- **ローカル Embedding vs API 呼び出し**: `sentence-transformers`のローカル実行はAPIコストを削減しますが、コンテナイメージのサイズとメモリ使用量が増加します。精度とリソース消費のバランスを取るため、`all-MiniLM-L6-v2`モデルを採用しています。
-- **Serverless コールドスタート**: Azure Container Appsはゼロスケールに対応しておりコスト面で有利ですが、コールドスタート時にEmbeddingモデルをメモリにロードするためレイテンシが増加します。緩和策として、本番環境では最小レプリカ数を1に設定しています。
-- **カナリアリリースの複雑さ**: カナリアリリースの実装にはACAリビジョンの状態管理が必要です。パイプラインの透明性とデバッグのしやすさを保つため、複雑なOperatorではなくBashスクリプト（`deploy_canary.sh`）を採用しています。
+Create a new versioned index and ingest local documents:
+
+~~~bash
+uv run python scripts/create_index.py --index-name ragdocs-v3
+uv run python scripts/ingest.py --data-dir data --index-name ragdocs-v3
+~~~
+
+Index creation refuses to overwrite an existing index unless
+--delete-existing is explicitly supplied. Clearing documents is similarly
+protected by --yes.
+
+Start and probe the API:
+
+~~~bash
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:8000/ready
+curl -fsS http://127.0.0.1:8000/query \
+  -H 'content-type: application/json' \
+  --data '{"question":"Java 中 HashMap 的工作原理是什么？","top_k":3}'
+~~~
+
+Run the complete local gate:
+
+~~~bash
+PATH="$PWD/.venv/bin:$PATH" bash scripts/verify.sh
+~~~
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| AZURE_SEARCH_INDEX_NAME | ragdocs-v3 | Runtime index |
+| AZURE_SEARCH_INDEX_NAME_V3 | ragdocs-v3 | Safe migration-script target; never falls back to the legacy name |
+| OPENAI_MODEL | gpt-5.6-terra | Generator |
+| OPENAI_REASONING_EFFORT | low | Terra reasoning budget |
+| OPENAI_VERBOSITY | low | Response verbosity |
+| OPENAI_MAX_OUTPUT_TOKENS | 1200 | Output ceiling |
+| EMBEDDING_MODEL | intfloat/multilingual-e5-small | Fixed supported embedding family |
+| EMBEDDING_MODEL_REVISION | 614241f…18b3 | Immutable model commit |
+| EMBEDDING_MODEL_PATH | unset locally; /opt/models/... in image | Preloaded offline model |
+| EMBEDDING_BATCH_SIZE | 16 | Online/batch encoding size |
+| EMBEDDING_QUERY_MAX_TOKENS | 512 | Online query encoder ceiling; ingestion chunks default to 384 |
+| SEARCH_TOP_K_DEFAULT / MAX | 5 / 10 | Retrieval result bounds |
+| MAX_QUESTION_CHARS | 4000 | Request abuse/size bound |
+
+See [.env.example](.env.example) for the full set.
+
+## API contract
+
+- GET /health — process liveness only; no dependency calls.
+- GET /ready — validates Search/OpenAI configuration and loads the local
+  embedding model without calling external services.
+- GET /warmup — explicitly loads and exercises the embedding model.
+- POST /query — returns backward-compatible answer/contexts plus metadata:
+  actual generator, response status, grounded/refused state, validated
+  citations, and token usage.
+
+Question text and retrieved private content are not written to normal
+application logs. Query logs contain a hash and character count for
+correlation.
+
+## 2.x → 3.0 index migration
+
+The migration is intentionally dual-index and reversible:
+
+1. Keep the current ragdocs index and stable 2.x revision.
+2. Create ragdocs-v3 without --delete-existing.
+3. Re-embed the full corpus with the fixed E5 revision.
+4. Replace the synthetic golden file with source-labelled questions, then run
+   the Azure source-level smoke and manually inspect ZH/JA/EN results. Use a
+   dedicated page/chunk-labelled evaluator before making recall claims.
+5. Reconcile/import the existing Container App state, review Terraform plan,
+   and apply the 1 vCPU / 2 GiB target plus HTTP probes using the encrypted
+   remote backend. Confirm the live template before deploying E5.
+6. Manually dispatch CD with the exact successful CI commit SHA and signed
+   image digest; it changes the candidate to ragdocs-v3 and Terra.
+7. At 0% production traffic, call /health, /warmup, and a real /query through
+   the candidate label.
+8. Progress 10% → 50% → 100%, verifying each weight; restore the captured
+   stable revision on failure or cancellation.
+9. Retain ragdocs through the observation window and delete it only through an
+   explicit maintainer operation.
+
+Example Azure-labelled retrieval run:
+
+~~~bash
+uv run python scripts/evaluate_retrieval.py \
+  --backend azure \
+  --index-name ragdocs-v3 \
+  --golden eval/azure-golden.jsonl \
+  --model intfloat/multilingual-e5-small \
+  --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3
+~~~
+
+The Azure evaluator matches expected_source and is therefore a source-level
+smoke, not a chunk/page relevance metric. Build eval/azure-golden.jsonl from
+manually labelled source names/questions before treating the result as corpus evidence.
+
+## CI/CD and supply chain
+
+Pull requests run the Python quality gate, Terraform formatting/validation,
+filesystem/IaC/secret scanning, and a deployable-image scan. A main-branch
+build:
+
+1. builds and pushes one immutable SHA tag;
+2. scans that exact digest for HIGH/CRITICAL findings;
+3. generates a CycloneDX SBOM;
+4. attests the same digest with its CycloneDX SBOM;
+5. uploads the evidence, promotes latest, and only then creates the final
+   keyless deployment-authorization signature.
+
+Manual workflow dispatch runs quality checks only; only a successful main
+`push` publishes the push-provenance image accepted by CD. CD is a manual
+promotion step that requires an exact 40-character main commit
+and sha256 digest. It verifies that the immutable SHA tag matches the digest and
+that both Cosign's signature and CycloneDX attestation carry matching workflow,
+ref, trigger, and commit claims before preserving
+the prior revision, creating the candidate, and delegating
+traffic/rollback to [scripts/deploy_canary.sh](scripts/deploy_canary.sh).
+
+Azure login intentionally retains the existing long-lived
+AZURE_CREDENTIALS service-principal JSON for this interview lab. Production
+should use a protected GitHub Environment, federated identity, and a narrower
+role.
+
+The CD job targets the `stg` GitHub Environment. Create that environment and
+configure its required reviewer before the first deployment; merely naming an
+environment in YAML does not add approval protection to the current repository.
+
+The Terraform configuration uses an Azure Storage backend and models the existing Container App topology,
+including the Datadog sidecar and out-of-band secret references. It does not
+put current application secret values in source or outputs. Treat it as
+reconciliation/import-oriented IaC; for a fresh environment, create the named
+Container App secrets securely before applying references, or use the guarded
+setup script and then import/reconcile state.
+
+Because Terraform creates the one-year Service Principal password, that value
+is stored in Terraform state even though it is neither printed nor exposed as
+an output. Initialize the declared backend with a protected Azure Storage
+account/container/key; never use or commit local state for this configuration.
+
+## Security and operational limits
+
+Implemented controls include bounded requests, privacy-preserving logs, pinned
+model/dependencies/base images/actions, a non-root offline-model image,
+dependency and image scanning, SBOM generation/attestation, signature verification, digest deployment,
+and rollback traps.
+
+Known limits are equally important:
+
+- the FastAPI application has no built-in end-user authentication or rate
+  limiter, so a public endpoint must not expose sensitive corpora;
+- retrieved documents are untrusted prompt input;
+- each question and retrieved chunk is sent to OpenAI for generation, and full
+  context text is returned to the API caller; `store=false` does not remove
+  these deliberate processing/disclosure boundaries;
+- the Search service currently uses an API key and has public network access;
+- the Azure Student deployment is free/low-resource and has no production SLA;
+- scale-to-zero saves cost but creates model cold starts;
+- a health check cannot measure semantic answer quality, so the canary also
+  runs a fixed full-path query; production should add p95/5xx/cost/SLO gates;
+- Datadog sync/events skip when optional credentials are absent;
+- repository policy still needs branch/ruleset enforcement on GitHub.
+
+See [SECURITY.md](SECURITY.md) for reporting and trust-boundary details.
+
+## Current Azure snapshot vs 3.0 target
+
+Read-only Azure/portal inspection on 2026-08-13 produced this evidence:
+
+| Area | Observed live 2.x | Local 3.0 target |
+|---|---|---|
+| App container | 0.5 vCPU / 1 GiB | 1 vCPU / 2 GiB |
+| Scale | min 0 / max 1 | min 0 / max 1 |
+| Revisions | Multiple | Multiple |
+| Embedding/index | legacy ragdocs, 469 documents | pinned E5 + ragdocs-v3 |
+| Generator | gpt-5.4-mini | gpt-5.6-terra, low reasoning |
+| Datadog sidecar | 0.5 vCPU / 1 GiB, mutable latest tag | same allocation, pinned digest |
+| Probes | TCP | HTTP startup/readiness/liveness |
+
+The current Search service is Free tier with one replica/partition. These facts
+describe the dated inspected environment, not a guarantee about future state.
+No Azure key or secret value was retrieved during that audit.
+
+## Evaluation roadmap
+
+Before claiming production-quality improvement:
+
+1. label 60–100 questions by ZH/JA/EN, fact/multi-hop/no-answer, source and page;
+2. compare keyword-only, vector-only, hybrid E5, and optional reranking under
+   identical chunks/top K;
+3. record Recall@K, MRR, nDCG, page/source hit rate and no-answer false positives;
+4. separately score answer correctness, faithfulness, citation precision/recall,
+   refusal accuracy and language consistency;
+5. record image size, RSS, cold/warm p50/p95, tokens, cost/query and error rate;
+6. manually review samples from any LLM-as-judge evaluation.
+
+Do not publish an unmeasured “accuracy improved by X%” claim.
+
+## 日本語要約
+
+3.0 は Azure Container Apps 上で動く多言語 RAG のローカル
+リリース候補です。固定 revision の multilingual-E5、バージョン付き
+ragdocs-v3、token-aware chunk、Azure AI Search hybrid retrieval、
+gpt-5.6-terra の Structured Outputs、評価用 fixture、署名済み digest と
+ロールバック可能な canary を一つの再現可能なプロジェクトとしてまとめています。
+現在の Azure 2.x 環境とは明確に分離されており、クラウド移行と公開リリースは
+maintainer が確認後に実行します。
+
+## Release state
+
+Version 3.0.0 is a breaking data-plane release because the embedding space and
+index change. A valid release requires the version, Git tag, image digest,
+model revision, index name, eval report, and deployment revision to refer to
+the same source commit.
+
+The repository owner performs the final push, GitHub Release, index migration,
+and Azure deployment after reviewing the local commit/tag.
+
+## License and responsible use
+
+The code is an interview/learning project. Confirm the licenses and data-use
+rights of every ingested document and model before adapting it for another
+environment.

@@ -7,9 +7,10 @@ Azure Container Apps にデプロイされた RAG API のテストスクリプ�
 認証付きエンドポイントには AZURE_ACCESS_TOKEN 環境変数が必要です。
 """
 
+import json
 import os
 import sys
-import json
+
 import requests
 from dotenv import load_dotenv
 
@@ -77,13 +78,13 @@ def test_health() -> bool:
         return False
 
 
-def test_query(question: str = "什么是 RAG？", top_k: int = 3) -> bool:
+def test_query(question: str = "Java 中 HashMap 的工作原理是什么?", top_k: int = 3) -> bool:
     """Test the query endpoint. / クエリエンドポイントのテスト"""
     token = _get_token()
     headers = _auth_headers(token)
     data = {"question": question, "top_k": top_k}
 
-    print(f"\n🔍 POST /query")
+    print("\n🔍 POST /query")
     print(f"Question: {question}")
     print("-" * 50)
 

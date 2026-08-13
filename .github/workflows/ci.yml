@@ -1,207 +1,267 @@
-# ============================================================================
-# CI: Build → Trivy Scan → Push → SBOM → Cosign Sign → Datadog Catalog Sync
-# CI: ビルド → Trivy スキャン → プッシュ → SBOM → Cosign 署名 → Datadog Catalog 同期
-# ============================================================================
-
 name: CI - Build Scan SBOM Sign Push to GHCR
 
 on:
   push:
     branches: [main]
     paths:
+      - '.github/**'
       - 'app/**'
       - 'scripts/**'
+      - 'tests/**'
+      - 'eval/**'
+      - 'terraform/**'
+      - '.python-version'
       - 'Dockerfile'
-      - 'requirements.txt'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements*.txt'
+      - '.env.example'
+      - 'service.datadog.yaml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/**'
+      - 'app/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'eval/**'
+      - 'terraform/**'
+      - '.python-version'
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements*.txt'
       - '.env.example'
       - 'service.datadog.yaml'
   workflow_dispatch:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
+  UV_VERSION: 0.11.16
+  PYTHON_VERSION: 3.12.13
+  TERRAFORM_VERSION: 1.15.8
+  ACTIONLINT_VERSION: 1.7.12
 
 jobs:
-  build-scan-sign-push:
+  quality:
+    name: Quality, tests, and Terraform validation
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     permissions:
       contents: read
-      packages: write       # Push to GHCR / GHCR へプッシュ
-      id-token: write       # Cosign OIDC keyless signing / Cosign OIDC キーレス署名
-    outputs:
-      image_repo: ${{ steps.meta-prep.outputs.image_repo }}
-      image_tag: ${{ steps.tag.outputs.image_tag }}
-      image_digest: ${{ steps.push-image.outputs.digest }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
 
-      - name: Free disk space
-        run: |
-          docker system prune -af
-          docker builder prune -af
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.1.6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
 
-      # Lowercase image repo name (GHCR requires lowercase)
-      # イメージリポジトリ名を小文字に変換（GHCR の要件）
-      - name: Prepare lowercase image repo
-        id: meta-prep
+      - name: Install locked Python environment
         run: |
-          IMAGE_REPO="${{ env.REGISTRY }}/${{ github.repository }}"
-          IMAGE_REPO_LOWER=$(echo "$IMAGE_REPO" | tr '[:upper:]' '[:lower:]')
-          echo "image_repo=$IMAGE_REPO_LOWER" >> $GITHUB_OUTPUT
-          echo "image repo: $IMAGE_REPO_LOWER"
+          uv python install "${PYTHON_VERSION}"
+          uv sync --frozen --dev --python "${PYTHON_VERSION}"
 
-      # Tag format: sha-<first 7 chars> / タグ形式: sha-<先頭7文字>
-      - name: Prepare tag
-        id: tag
-        run: |
-          SHORT_SHA="${GITHUB_SHA:0:7}"
-          echo "image_tag=sha-$SHORT_SHA" >> $GITHUB_OUTPUT
-          echo "tag: sha-$SHORT_SHA"
+      - name: Run repository verification
+        run: PATH="$PWD/.venv/bin:$PATH" bash scripts/verify.sh
 
-      # Extract app version from __init__.py / __init__.py からバージョンを取得
-      - name: Extract App Version
-        id: version
+      - name: Run pinned multilingual retrieval regression
         run: |
-          VERSION=$(grep -E '^__version__\s*=\s*' app/__init__.py | cut -d '"' -f 2)
-          echo "app_version=$VERSION" >> $GITHUB_OUTPUT
-          echo "version: $VERSION"
+          uv run python scripts/evaluate_retrieval.py \
+            --backend local \
+            --model sentence-transformers/all-MiniLM-L6-v2 \
+            --revision 1110a243fdf4706b3f48f1d95db1a4f5529b4d41 \
+            --model intfloat/multilingual-e5-small \
+            --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3 \
+            | tee retrieval-eval.json
+          python -c 'import json; report=json.load(open("retrieval-eval.json", encoding="utf-8")); candidate=report["models"][1]["metrics"]; assert candidate["overall"]["recall@1"] >= 1.0; assert candidate["overall"]["recall@3"] >= 1.0; assert candidate["overall"]["mrr"] >= 1.0; assert candidate["by_language"]["ja"]["recall@1"] >= 1.0'
+
+      - name: Validate GitHub Actions workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          actionlint_dir="${RUNNER_TEMP}/actionlint-${ACTIONLINT_VERSION}"
+          archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          mkdir -p "$actionlint_dir"
+          curl --fail --location --silent --show-error \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' \
+            '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$archive" \
+            | sha256sum --check
+          tar --extract --gzip --file "$archive" --directory "$actionlint_dir"
+          "$actionlint_dir/actionlint" -color
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.0
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Validate Terraform
+        run: |
+          terraform fmt -check -recursive terraform
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate
+
+  build-scan-sign-push:
+    name: Build once, verify, sign, and publish
+    # CD verifies a push-triggered ci.yml certificate. Manual dispatch remains
+    # useful for quality checks but deliberately cannot publish a deployable image.
+    if: github.event_name == 'push'
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      image_repo: ${{ steps.image.outputs.image_repo }}
+      image_tag: ${{ steps.image.outputs.image_tag }}
+      image_digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+
+      - name: Prepare immutable image reference
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_repo="${REGISTRY}/${GITHUB_REPOSITORY}"
+          image_repo="${image_repo,,}"
+          image_tag="sha-${GITHUB_SHA}"
+          app_version=$(sed -n 's/^__version__ *= *"\([^"]*\)"/\1/p' app/__init__.py)
+          test -n "$app_version"
+          echo "image_repo=$image_repo" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.12.0
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3.7.0
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 1) Build locally for Trivy scan (no push)
-      # 1) Trivy スキャン用にローカルビルド（プッシュなし）
-      - name: Build image locally for scanning
-        uses: docker/build-push-action@v6
+      - name: Build and push immutable candidate
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          push: false
-          load: true
-          tags: |
-            ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+          push: true
+          tags: ${{ steps.image.outputs.image_repo }}:${{ steps.image.outputs.image_tag }}
           build-args: |
-            APP_VERSION=${{ steps.version.outputs.app_version }}
+            APP_VERSION=${{ steps.image.outputs.app_version }}
             BUILD_SHA=${{ github.sha }}
-            IMAGE_TAG=${{ steps.tag.outputs.image_tag }}
-            PRELOAD_EMBEDDING_MODEL=0
+            IMAGE_TAG=${{ steps.image.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # 2) Trivy gate: fail on HIGH/CRITICAL vulnerabilities
-      # 2) Trivy ゲート: HIGH/CRITICAL 脆弱性があればビルドを失敗させる
-      - name: Trivy image scan (gate)
-        uses: aquasecurity/trivy-action@master
+      - name: Scan the exact candidate digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
+          image-ref: ${{ steps.image.outputs.image_repo }}@${{ steps.build.outputs.digest }}
+          scanners: vuln
           format: table
           vuln-type: os,library
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
+          exit-code: '1'
 
-      # 3) Scan passed → push sha + latest tags
-      # 3) スキャン通過 → sha タグと latest タグをプッシュ
-      - name: Build and push Docker image
-        id: push-image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}
-            ${{ steps.meta-prep.outputs.image_repo }}:latest
-          build-args: |
-            APP_VERSION=${{ steps.version.outputs.app_version }}
-            BUILD_SHA=${{ github.sha }}
-            IMAGE_TAG=${{ steps.tag.outputs.image_tag }}
-            PRELOAD_EMBEDDING_MODEL=0
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # 4) Export digest for CD to deploy by digest
-      # 4) CD がダイジェストでデプロイするために digest をエクスポート
-      - name: Export image digest
-        run: |
-          DIGEST="${{ steps.push-image.outputs.digest }}"
-          echo "digest: $DIGEST"
-          echo "$DIGEST" > digest.txt
-
-      - name: Upload digest artifact
-        uses: actions/upload-artifact@v6.0.0
-        with:
-          name: image-digest
-          path: digest.txt
-
-      # 5) Generate SBOM (CycloneDX format)
-      # 5) SBOM を生成（CycloneDX 形式）
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0.22.2
+        uses: anchore/sbom-action/download-syft@28d71544de8eaf1b958d335707167c5f783590ad # v0.22.2
 
-      - name: Generate SBOM (CycloneDX JSON)
+      - name: Generate SBOM from the exact candidate digest
         run: |
-          syft ${{ steps.meta-prep.outputs.image_repo }}@${{ steps.push-image.outputs.digest }} -o cyclonedx-json > sbom.cdx.json
+          syft "${{ steps.image.outputs.image_repo }}@${{ steps.build.outputs.digest }}" \
+            --output cyclonedx-json=sbom.cdx.json
 
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v6.0.0
-        with:
-          name: sbom-${{ steps.tag.outputs.image_tag }}
-          path: sbom.cdx.json
-
-      # 6) Cosign keyless signing (OIDC)
-      # 6) Cosign キーレス署名（OIDC）
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.0.0
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
         with:
-          cosign-release: 'v3.0.5'
+          cosign-release: v3.0.5
 
-      - name: Cosign sign image (keyless)
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        run: |
-          cosign sign --yes ${{ steps.meta-prep.outputs.image_repo }}@${{ steps.push-image.outputs.digest }}
-
-      # Attach SBOM as attestation to the image
-      # SBOM をアテステーションとしてイメージに添付
-      - name: Cosign attach SBOM attestation
-        env:
-          COSIGN_EXPERIMENTAL: "true"
+      - name: Attest the exact candidate digest with its SBOM
         run: |
           cosign attest --yes \
             --predicate sbom.cdx.json \
             --type cyclonedx \
-            ${{ steps.meta-prep.outputs.image_repo }}@${{ steps.push-image.outputs.digest }}
+            "${{ steps.image.outputs.image_repo }}@${{ steps.build.outputs.digest }}"
 
-      - name: Summary
+      - name: Export verified image digest
+        run: printf '%s\n' '${{ steps.build.outputs.digest }}' > digest.txt
+
+      - name: Upload digest artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: image-digest
+          path: digest.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: sbom-${{ steps.image.outputs.image_tag }}
+          path: sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Promote verified digest to latest
         run: |
-          echo "### CI Done" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image:** \`${{ steps.meta-prep.outputs.image_repo }}:${{ steps.tag.outputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Digest:** \`${{ steps.push-image.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tags:** sha + latest" >> $GITHUB_STEP_SUMMARY
-          echo "- **Trivy:** HIGH/CRITICAL gate passed" >> $GITHUB_STEP_SUMMARY
-          echo "- **SBOM:** sbom.cdx.json uploaded" >> $GITHUB_STEP_SUMMARY
-          echo "- **Cosign:** signed + SBOM attested (OIDC keyless)" >> $GITHUB_STEP_SUMMARY
+          docker buildx imagetools create \
+            --tag "${{ steps.image.outputs.image_repo }}:latest" \
+            "${{ steps.image.outputs.image_repo }}@${{ steps.build.outputs.digest }}"
 
-      # ---- Datadog Service Catalog Sync ----
-      # ---- Datadog Service Catalog 同期 ----
-      # Sync service.datadog.yaml via Software Catalog API
-      # Software Catalog API 経由で service.datadog.yaml を同期
-      - name: Sync Service Catalog metadata to Datadog (Software Catalog API)
+      - name: Sync Service Catalog metadata to Datadog
+        continue-on-error: true
         env:
           DD_API_KEY: ${{ secrets.DD_API_KEY }}
           DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
           DD_SITE: us5.datadoghq.com
         run: |
           if [ -z "${DD_API_KEY:-}" ] || [ -z "${DD_APP_KEY:-}" ]; then
-            echo "Skipping Datadog Service Catalog sync: DD_API_KEY or DD_APP_KEY is not configured."
+            echo "Skipping Datadog Service Catalog sync: credentials are not configured."
             exit 0
           fi
           bash scripts/sync_datadog_catalog.sh service.datadog.yaml
+
+      - name: Summary
+        run: |
+          echo '### CI complete' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Quality: ruff, mypy, pytest, pip-audit, Terraform validation' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Image: `${{ steps.image.outputs.image_repo }}:${{ steps.image.outputs.image_tag }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Digest: `${{ steps.build.outputs.digest }}`' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Supply chain: exact-digest Trivy scan, SBOM, signature, and attestation' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Promotion: `latest` now points to the verified digest' >> "$GITHUB_STEP_SUMMARY"
+
+      # This is the deployment-authorization signature. Keep it after every
+      # mandatory scan, attestation, artifact, promotion, and summary step so a
+      # partially completed CI run cannot leave a CD-acceptable candidate.
+      - name: Authorize the exact candidate digest for deployment
+        run: cosign sign --yes "${{ steps.image.outputs.image_repo }}@${{ steps.build.outputs.digest }}"
+
+  deploy:
+    name: Auto Canary Deploy to Azure
+    needs: [quality, build-scan-sign-push]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/cd.yml
+    with:
+      commit_sha: ${{ github.sha }}
+      image_digest: ${{ needs.build-scan-sign-push.outputs.image_digest }}
+    secrets: inherit
