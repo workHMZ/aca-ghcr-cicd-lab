@@ -12,7 +12,11 @@ resource "azuread_service_principal" "github_actions" {
 
 resource "azuread_service_principal_password" "github_actions" {
   service_principal_id = azuread_service_principal.github_actions.id
-  end_date_relative    = "8760h" # 1 year
+  end_date             = timeadd(timestamp(), "8760h") # 1 year
+
+  lifecycle {
+    ignore_changes = [end_date]
+  }
 }
 
 # Contributor role on the Resource Group

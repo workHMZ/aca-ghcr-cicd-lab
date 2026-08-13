@@ -1,0 +1,9 @@
+# Development dependencies are declared in pyproject.toml and locked in uv.lock.
+-e .
+httpx==0.28.1
+mypy==2.3.0
+pip-audit==2.10.1
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+ruff==0.16.2

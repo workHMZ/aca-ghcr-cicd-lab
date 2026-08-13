@@ -1,0 +1,6 @@
+{"id":"zh-jvm-memory","language":"zh","query":"JVM 运行时数据区包含哪些部分？堆和虚拟机栈有什么区别？","expected_id":"java-jvm-memory","expected_source":"fixture/java-interview-guide.md"}
+{"id":"zh-hashmap","language":"zh","query":"Java 8 的 HashMap 遇到大量哈希冲突时如何处理？","expected_id":"java-hashmap","expected_source":"fixture/java-interview-guide.md"}
+{"id":"ja-gc","language":"ja","query":"Java のガベージコレクションは何を基準に不要なオブジェクトを判断しますか。","expected_id":"java-gc-goal","expected_source":"fixture/java-interview-guide.md"}
+{"id":"ja-lock","language":"ja","query":"synchronized と ReentrantLock の主な違いを説明してください。","expected_id":"java-locks","expected_source":"fixture/java-interview-guide.md"}
+{"id":"en-exceptions","language":"en","query":"How do checked and unchecked exceptions differ in Java?","expected_id":"java-exceptions","expected_source":"fixture/java-interview-guide.md"}
+{"id":"en-lists","language":"en","query":"When would ArrayList behave differently from LinkedList for access and insertion?","expected_id":"java-list-implementations","expected_source":"fixture/java-interview-guide.md"}

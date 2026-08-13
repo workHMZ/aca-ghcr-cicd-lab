@@ -1,20 +1,30 @@
-# ============================================================================
-# CD: Canary Deploy to Azure Container Apps
-# CD: Azure Container Apps へのカナリアデプロイ
-# ============================================================================
-# Triggered by CI success or manual dispatch
-# CI 成功時またはマニュアルディスパッチで起動
-# ============================================================================
-
 name: CD - Canary Deploy to Azure Container Apps
 
 on:
-  workflow_run:
-    workflows: ["CI - Build Scan SBOM Sign Push to GHCR"]
-    types:
-      - completed
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full 40-character main commit SHA produced by the successful CI run
+        required: true
+        type: string
+      image_digest:
+        description: Immutable sha256 digest produced and signed by that same CI run
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      commit_sha:
+        description: Full 40-character main commit SHA produced by the successful CI run
+        required: true
+        type: string
+      image_digest:
+        description: Immutable sha256 digest produced and signed by that same CI run
+        required: true
+        type: string
+
+concurrency:
+  group: cd-serverless-rag-api-stg
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -23,178 +33,265 @@ env:
 
 jobs:
   deploy:
+    name: Verify and canary deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: stg
     permissions:
-      actions: read
+      contents: read
       packages: read
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
+      - name: Checkout deployed revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+        with:
+          ref: ${{ inputs.commit_sha }}
+
       - name: Log in to Azure
-        uses: azure/login@v2.3.0
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Download digest artifact from CI run
-      # CI の成果物からダイジェストをダウンロード
-      - name: Download image digest from CI
-        if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v7.0.0
-        with:
-          name: image-digest
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # Resolve GHCR credentials: prefer PAT, fallback to GITHUB_TOKEN
-      # GHCR 認証情報の解決: PAT を優先し、未設定時は GITHUB_TOKEN にフォールバック
-      - name: Resolve GHCR credentials
-        id: ghcr-creds
-        shell: bash
-        run: |
-          if [ -n "${{ secrets.GHCR_USERNAME }}" ] && [ -n "${{ secrets.GHCR_TOKEN }}" ]; then
-            echo "username=${{ secrets.GHCR_USERNAME }}" >> $GITHUB_OUTPUT
-            echo "token=${{ secrets.GHCR_TOKEN }}" >> $GITHUB_OUTPUT
-            echo "Using GHCR_USERNAME/GHCR_TOKEN"
-          else
-            echo "username=${{ github.actor }}" >> $GITHUB_OUTPUT
-            echo "token=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_OUTPUT
-            echo "GHCR_TOKEN not set, falling back to GITHUB_TOKEN"
-            echo "For private images, token expiry may cause pull failures"
-          fi
-
-      # Log in to GHCR (required for cosign verify and digest resolution)
-      # GHCR にログイン（cosign 検証とダイジェスト解決に必要）
       - name: Log in to GHCR
-        uses: docker/login-action@v3.7.0
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ steps.ghcr-creds.outputs.username }}
-          password: ${{ steps.ghcr-creds.outputs.token }}
+          username: ${{ secrets.GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
-      # Build image URL: prefer digest from artifact, fallback to registry query
-      # イメージ URL 構築: 成果物のダイジェストを優先、なければレジストリから取得
-      - name: Prepare image url
-        id: image-prep
+      - name: Prepare immutable image URL
+        id: image
         shell: bash
-        run: |
-          set -euo pipefail
-          FULL_IMAGE="${{ env.REGISTRY }}/${{ github.repository }}"
-          LOWER_IMAGE=$(echo "$FULL_IMAGE" | tr '[:upper:]' '[:lower:]')
-
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            TAG="latest"
-          else
-            SHA="${{ github.event.workflow_run.head_sha }}"
-            TAG="sha-${SHA:0:7}"
-          fi
-
-          if [ -f digest.txt ]; then
-            DIGEST=$(cat digest.txt | tr -d '[:space:]')
-            echo "digest (from CI artifact): $DIGEST"
-          else
-            echo "No digest artifact found, querying registry..."
-            DIGEST=$(docker buildx imagetools inspect "$LOWER_IMAGE:$TAG" 2>/dev/null \
-              | grep -m1 "^Digest:" | awk '{print $2}')
-            if [ -n "$DIGEST" ]; then
-              echo "digest (from registry): $DIGEST"
-            else
-              echo "Failed to resolve digest, exiting"
-              exit 1
-            fi
-          fi
-
-          echo "image_repo=$LOWER_IMAGE" >> $GITHUB_OUTPUT
-          echo "image_tag=$TAG" >> $GITHUB_OUTPUT
-          echo "image_digest=$DIGEST" >> $GITHUB_OUTPUT
-          echo "image_url=$LOWER_IMAGE@$DIGEST" >> $GITHUB_OUTPUT
-          echo "Deploy image: $LOWER_IMAGE@$DIGEST (tag: $TAG)"
-
-      # Verify image signature before deployment (supply chain security)
-      # デプロイ前にイメージ署名を検証（サプライチェーンセキュリティ）
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.0.0
-        with:
-          cosign-release: 'v3.0.5'
-
-      - name: Verify image signature (Cosign)
         env:
-          COSIGN_EXPERIMENTAL: "true"
+          INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
+          INPUT_IMAGE_DIGEST: ${{ inputs.image_digest }}
         run: |
-          echo "Verifying image signature..."
-          cosign verify \
-            --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${{ steps.image-prep.outputs.image_url }}"
-          echo "Signature verified successfully"
+          set -euo pipefail
+          image_repo="${REGISTRY}/${GITHUB_REPOSITORY}"
+          image_repo="${image_repo,,}"
+          commit_sha="${INPUT_COMMIT_SHA}"
+          image_digest="${INPUT_IMAGE_DIGEST}"
 
-      # Enable multiple revisions mode (required for canary deployment)
-      # マルチリビジョンモードを有効化（カナリアデプロイの前提条件）
-      - name: Ensure Multiple Revisions mode
+          if [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'commit_sha must be a full lowercase 40-character Git SHA.' >&2
+            exit 1
+          fi
+
+          if [[ ! "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo 'image_digest must be an immutable sha256 digest.' >&2
+            exit 1
+          fi
+
+          image_tag="sha-$commit_sha"
+          tag_digest=''
+          inspect_error=''
+          for attempt in 1 2 3 4 5; do
+            if inspect_output=$(docker buildx imagetools inspect "$image_repo:$image_tag" 2>&1); then
+              tag_digest=$(awk '$1 == "Digest:" { print $2; exit }' <<< "$inspect_output")
+              if [[ "$tag_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                break
+              fi
+            fi
+            inspect_error="$inspect_output"
+            echo "GHCR tag is not ready yet (attempt $attempt/5)." >&2
+            if [ "$attempt" -lt 5 ]; then
+              sleep $((attempt * 5))
+            fi
+          done
+          if [ -z "$tag_digest" ]; then
+            printf '%s\n' "$inspect_error" >&2
+            echo "Unable to resolve the immutable digest for $image_tag." >&2
+            exit 1
+          fi
+          if [ "$tag_digest" != "$image_digest" ]; then
+            echo "The supplied digest does not match $image_tag." >&2
+            exit 1
+          fi
+
+          {
+            echo "commit_sha=$commit_sha"
+            echo "image_repo=$image_repo"
+            echo "image_tag=$image_tag"
+            echo "image_digest=$image_digest"
+            echo "image_url=$image_repo@$image_digest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad # v4.0.0
+        with:
+          cosign-release: v3.0.5
+
+      - name: Verify exact CI workflow identity and image signature
+        run: |
+          cosign verify \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-repository "${GITHUB_REPOSITORY}" \
+            --certificate-github-workflow-ref "refs/heads/main" \
+            --certificate-github-workflow-sha "${{ steps.image.outputs.commit_sha }}" \
+            --certificate-github-workflow-trigger "push" \
+            "${{ steps.image.outputs.image_url }}"
+
+          cosign verify-attestation \
+            --type cyclonedx \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-repository "${GITHUB_REPOSITORY}" \
+            --certificate-github-workflow-ref "refs/heads/main" \
+            --certificate-github-workflow-sha "${{ steps.image.outputs.commit_sha }}" \
+            --certificate-github-workflow-trigger "push" \
+            "${{ steps.image.outputs.image_url }}" \
+            >/dev/null
+
+      - name: Ensure Multiple revisions mode
         shell: bash
         run: |
           set -euo pipefail
-          az extension add --name containerapp --upgrade
-          az containerapp update \
-            -g "${{ env.AZURE_RESOURCE_GROUP }}" \
-            -n "${{ env.AZURE_CONTAINER_APP_NAME }}" \
-            --revisions-mode multiple
+          az containerapp revision set-mode \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --mode multiple \
+            --output none
 
-      # Record deploy start time for DORA Metrics lead time calculation
-      # DORA Metrics のリードタイム計算のためにデプロイ開始時刻を記録
       - name: Record deploy start time
         id: deploy-timer
-        run: echo "start=$(date +%s%N)" >> $GITHUB_OUTPUT
+        run: echo "start=$(date +%s%N)" >> "$GITHUB_OUTPUT"
 
-      # Deploy new revision (specify --container-name for multi-container apps)
-      # 新しいリビジョンをデプロイ（マルチコンテナ環境では --container-name を指定）
-      - name: Deploy to Azure Container Apps
+      - name: Capture stable revision before creating the candidate
+        id: stable
         shell: bash
         run: |
           set -euo pipefail
+          stable_revision=$(az containerapp revision list \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --query "sort_by([?properties.trafficWeight!=null && properties.trafficWeight>\`0\`].{name:name, weight:properties.trafficWeight}, &weight)[-1].name" \
+            --output tsv)
+          if [ -z "$stable_revision" ]; then
+            echo 'No existing stable revision has positive traffic; this workflow only reconciles an existing deployment.' >&2
+            exit 1
+          fi
+          echo "stable_revision=$stable_revision" >> "$GITHUB_OUTPUT"
 
-          # Ensure registry credentials are configured
-          # レジストリの認証情報を設定
+      - name: Pin the captured stable revision before candidate creation
+        shell: bash
+        env:
+          STABLE_REVISION: ${{ steps.stable.outputs.stable_revision }}
+        run: |
+          set -euo pipefail
+          stable_revision="${STABLE_REVISION}"
+          az containerapp ingress traffic set \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --revision-weight "$stable_revision=100" \
+            --output none
+
+          traffic_json=$(az containerapp show \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --query properties.configuration.ingress.traffic \
+            --output json)
+          jq -e --arg stable "$stable_revision" '
+            ([.[] | select(.revisionName == $stable and .weight == 100)] | length) == 1 and
+            ([.[] | select(
+              ((.latestRevision // false) == true) or
+              (((.revisionName // "") != $stable) and ((.weight // 0) > 0))
+            )] | length) == 0
+          ' <<< "$traffic_json" >/dev/null || {
+            echo 'Failed to establish an explicit stable=100/latest=false traffic baseline.' >&2
+            exit 1
+          }
+
+      - name: Create candidate revision
+        id: candidate
+        shell: bash
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          STABLE_REVISION: ${{ steps.stable.outputs.stable_revision }}
+        run: |
+          set -euo pipefail
+          stable_revision="${STABLE_REVISION}"
+
+          restore_stable_on_error() {
+            exit_code=$?
+            trap - EXIT INT TERM
+            if [ "$exit_code" -ne 0 ] && [ -n "$stable_revision" ]; then
+              echo 'Candidate creation failed; restoring the captured stable revision.'
+              az containerapp ingress traffic set \
+                --name "${AZURE_CONTAINER_APP_NAME}" \
+                --resource-group "${AZURE_RESOURCE_GROUP}" \
+                --revision-weight "$stable_revision=100" \
+                --output none || true
+            fi
+            exit "$exit_code"
+          }
+          trap restore_stable_on_error EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
           az containerapp registry set \
-            -n "${{ env.AZURE_CONTAINER_APP_NAME }}" \
-            -g "${{ env.AZURE_RESOURCE_GROUP }}" \
-            --server "${{ env.REGISTRY }}" \
-            --username "${{ steps.ghcr-creds.outputs.username }}" \
-            --password "${{ steps.ghcr-creds.outputs.token }}" \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --server "${REGISTRY}" \
+            --username "${GHCR_USERNAME}" \
+            --password "${GHCR_TOKEN}" \
             --output none
-
-          # Update the specified container's image
-          # 指定されたコンテナのイメージを更新
           az containerapp update \
-            -n "${{ env.AZURE_CONTAINER_APP_NAME }}" \
-            -g "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
             --container-name serverless-rag-api \
-            -i "${{ steps.image-prep.outputs.image_url }}" \
+            --image "${{ steps.image.outputs.image_url }}" \
+            --cpu 1.0 \
+            --memory 2Gi \
+            --set-env-vars \
+              AZURE_SEARCH_INDEX_NAME=ragdocs-v3 \
+              OPENAI_MODEL=gpt-5.6-terra \
+              OPENAI_REASONING_EFFORT=low \
+              EMBEDDING_MODEL=intfloat/multilingual-e5-small \
+              EMBEDDING_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3 \
+              EMBEDDING_OFFLINE=1 \
             --output none
 
-          echo "✅ Deploy succeeded: ${{ steps.image-prep.outputs.image_url }}"
+          candidate_revision=$(az containerapp show \
+            --resource-group "${AZURE_RESOURCE_GROUP}" \
+            --name "${AZURE_CONTAINER_APP_NAME}" \
+            --query properties.latestRevisionName \
+            --output tsv)
+          test -n "$candidate_revision"
 
-      # Canary rollout: 0% smoke test → 10% → 50% → 100%
-      # カナリアリリース: 0% スモークテスト → 10% → 50% → 100%
-      - name: Checkout repository
-        uses: actions/checkout@v6
+          if [ -n "$stable_revision" ] && [ "$candidate_revision" != "$stable_revision" ]; then
+            az containerapp ingress traffic set \
+              --name "${AZURE_CONTAINER_APP_NAME}" \
+              --resource-group "${AZURE_RESOURCE_GROUP}" \
+              --revision-weight "$stable_revision=100" "$candidate_revision=0" \
+              --output none
+          fi
 
-      - name: Canary rollout logic
+          echo "candidate_revision=$candidate_revision" >> "$GITHUB_OUTPUT"
+          trap - EXIT INT TERM
+
+      - name: Canary rollout with real RAG checks
         env:
           RG: ${{ env.AZURE_RESOURCE_GROUP }}
           APP: ${{ env.AZURE_CONTAINER_APP_NAME }}
+          STABLE_REV: ${{ steps.stable.outputs.stable_revision }}
+          NEW_REV: ${{ steps.candidate.outputs.candidate_revision }}
+          CANARY_QUERY: ${{ vars.CANARY_QUERY || 'Java 中 HashMap 的工作原理是什么？' }}
+          CANARY_TOP_K: '3'
+          CANARY_QUERY_TIMEOUT_SECONDS: '180'
         run: bash scripts/deploy_canary.sh "$RG" "$APP"
 
-      # ---- Datadog DORA Metrics ----
-      # ---- Datadog DORA メトリクス ----
-      - name: Extract App Version
+      - name: Extract app version
         id: version
         if: success()
         run: |
-          VERSION=$(grep -E '^__version__\s*=' app/__init__.py | cut -d '"' -f 2)
-          echo "app_version=$VERSION" >> $GITHUB_OUTPUT
+          version=$(sed -n 's/^__version__ *= *"\([^"]*\)"/\1/p' app/__init__.py)
+          test -n "$version"
+          echo "app_version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Send DORA deployment event to Datadog (API)
-        if: ${{ success() }}
+      - name: Send DORA deployment event to Datadog
+        if: success()
         env:
           DD_API_KEY: ${{ secrets.DD_API_KEY }}
           DD_SITE: us5.datadoghq.com
@@ -204,41 +301,32 @@ jobs:
           DORA_VERSION: ${{ steps.version.outputs.app_version }}
           DORA_REPOSITORY_URL: https://github.com/${{ github.repository }}
           WORKFLOW_EVENT_NAME: ${{ github.event_name }}
-          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          GITHUB_SHA_CURRENT: ${{ github.sha }}
+          GITHUB_SHA_CURRENT: ${{ steps.image.outputs.commit_sha }}
         run: |
           if [ -z "${DD_API_KEY:-}" ]; then
-            echo "Skipping Datadog DORA event: DD_API_KEY is not configured."
+            echo 'Skipping Datadog DORA event: DD_API_KEY is not configured.'
             exit 0
           fi
           bash scripts/send_datadog_dora_deployment.sh
 
-      - name: Deployment Summary
+      - name: Deployment summary
         if: success()
-        shell: bash
         run: |
-          echo "### CD Done" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Resource Group | \`${{ env.AZURE_RESOURCE_GROUP }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Container App | \`${{ env.AZURE_CONTAINER_APP_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${{ steps.image-prep.outputs.image_repo }}:${{ steps.image-prep.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Digest | \`${{ steps.image-prep.outputs.image_digest }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Strategy | Canary: 0% smoke → 10% → 50% → 100% |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cosign | verified |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo '### CD complete'
+            echo "- App: \`${{ env.AZURE_CONTAINER_APP_NAME }}\`"
+            echo "- Image: \`${{ steps.image.outputs.image_repo }}@${{ steps.image.outputs.image_digest }}\`"
+            echo "- Commit: \`${{ steps.image.outputs.commit_sha }}\`"
+            echo '- Strategy: real query at 0%, verified 10%/50% weights, real query at 100%'
+            echo '- Signature: exact workflow identity, main ref, and commit SHA verified'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Deployment Failed Summary
+      - name: Deployment failure summary
         if: failure()
-        shell: bash
         run: |
-          echo "### CD Failed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Resource Group | \`${{ env.AZURE_RESOURCE_GROUP }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Container App | \`${{ env.AZURE_CONTAINER_APP_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${{ steps.image-prep.outputs.image_repo }}:${{ steps.image-prep.outputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Digest | \`${{ steps.image-prep.outputs.image_digest }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Deployment failed. Traffic should have been auto-rolled back to the stable revision." >> $GITHUB_STEP_SUMMARY
+          {
+            echo '### CD failed'
+            echo "- App: \`${{ env.AZURE_CONTAINER_APP_NAME }}\`"
+            echo "- Candidate: \`${{ steps.image.outputs.image_url }}\`"
+            echo '- The canary script attempts automatic rollback after traffic is armed.'
+          } >> "$GITHUB_STEP_SUMMARY"

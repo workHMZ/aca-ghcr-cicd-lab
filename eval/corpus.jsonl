@@ -1,0 +1,9 @@
+{"id":"java-jvm-memory","language":"zh","source":"fixture/java-interview-guide.md","content":"JVM 运行时内存主要包括程序计数器、Java 虚拟机栈、本地方法栈、堆和方法区。堆通常由线程共享并存放对象实例，虚拟机栈则保存每次方法调用的局部变量表、操作数栈和返回信息。"}
+{"id":"java-hashmap","language":"zh","source":"fixture/java-interview-guide.md","content":"Java HashMap 使用哈希表保存键值对。JDK 8 中桶内冲突先形成链表；当链表长度达到阈值且数组容量足够时会转成红黑树，以改善严重哈希冲突下的查询复杂度。"}
+{"id":"java-gc-goal","language":"zh","source":"fixture/java-interview-guide.md","content":"Java 垃圾收集器负责识别并回收不可达对象占用的堆内存。可达性分析从 GC Roots 出发；不同收集器会在吞吐量、暂停时间与内存开销之间作出不同权衡。"}
+{"id":"java-locks","language":"zh","source":"fixture/java-interview-guide.md","content":"synchronized 由 JVM 管理监视器锁并能自动释放；ReentrantLock 是显式锁，支持可中断获取、超时、公平策略和多个 Condition，但调用者必须在 finally 中主动 unlock。"}
+{"id":"java-exceptions","language":"zh","source":"fixture/java-interview-guide.md","content":"Java 的受检异常必须在编译期捕获或在方法签名中声明。RuntimeException 及其子类属于非受检异常，编译器不强制处理，通常用于表示编程错误或非法状态。"}
+{"id":"java-list-implementations","language":"zh","source":"fixture/java-interview-guide.md","content":"ArrayList 基于动态数组，随机访问快但在中间插入可能需要搬移元素。LinkedList 基于双向链表，按索引访问需要遍历，并且每个节点还带有额外指针开销。"}
+{"id":"database-btree","language":"zh","source":"fixture/distractors.md","content":"关系数据库常用 B+ 树索引减少磁盘随机访问。复合索引是否有效与字段顺序、选择性、查询谓词以及最左前缀匹配有关。"}
+{"id":"python-gil","language":"zh","source":"fixture/distractors.md","content":"CPython 的全局解释器锁使同一进程内通常只有一个线程执行 Python 字节码。I/O 密集任务仍可受益于线程，而 CPU 密集任务常考虑多进程。"}
+{"id":"http-cache","language":"zh","source":"fixture/distractors.md","content":"HTTP 缓存可通过 Cache-Control、ETag 和 Last-Modified 控制新鲜度与条件请求。共享缓存和私有缓存的适用边界不同。"}

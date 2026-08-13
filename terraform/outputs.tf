@@ -8,12 +8,6 @@ output "sp_client_id" {
   value       = azuread_application.github_actions.client_id
 }
 
-output "sp_client_secret" {
-  description = "Service Principal Password"
-  value       = azuread_service_principal_password.github_actions.value
-  sensitive   = true
-}
-
 output "sp_tenant_id" {
   description = "Azure AD Tenant ID"
   value       = data.azurerm_subscription.current.tenant_id
