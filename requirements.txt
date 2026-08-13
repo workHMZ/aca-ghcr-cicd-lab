@@ -1,28 +1,3 @@
-# Web Framework
-fastapi==0.138.0
-starlette==1.3.1
-uvicorn[standard]==0.40.0
-
-# Environment & Configuration
-python-dotenv==1.2.1
-
-# Azure SDK
-azure-core==1.38.0
-azure-search-documents==11.6.0
-
-# Embedding
-sentence-transformers==3.4.1
-pillow>=12.1.1                # CVE-2026-25990 fix (transitive dep)
-numpy==1.26.4
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.6.0+cpu; platform_system == "Linux"
-
-# Document Processing
-pypdf==6.6.2
-
-# OpenAI
-openai==2.17.0
-
-# Observability (Datadog & Logging)
-ddtrace==4.4.0
-python-json-logger==4.0.0
+# Runtime dependencies are declared in pyproject.toml and locked in uv.lock.
+# This compatibility file keeps `pip install -r requirements.txt` working.
+-e .

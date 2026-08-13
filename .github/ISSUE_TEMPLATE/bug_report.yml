@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a reproducible application, retrieval, or delivery problem
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include API keys, tokens, private document content, or full production logs.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v3.0.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Retrieval or ingestion
+        - Answer generation
+        - API
+        - Container or CI/CD
+        - Terraform or Azure
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: sanitized_logs
+    attributes:
+      label: Sanitized logs
+      render: shell

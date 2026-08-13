@@ -1,115 +1,171 @@
-# ============================================================================
-# Security - Trivy Vulnerability Scan (PR Gate)
-# セキュリティ - Trivy 脆弱性スキャン（PR ゲート）
-# ============================================================================
-# Trigger: Pull Request to main (code/config changes only)
-# トリガー: main ブランチへの PR（コード/設定変更のみ）
-# ============================================================================
-
 name: Security - Trivy Scan
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/**'
+      - 'app/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'eval/**'
+      - 'terraform/**'
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements*.txt'
+      - '.env.example'
   pull_request:
     branches: [main]
     paths:
-      # Only trigger on code/config changes, not docs or workflows
-      # コード/設定変更のみ対象、ドキュメントやワークフローの変更は無視
+      - '.github/**'
       - 'app/**'
       - 'scripts/**'
+      - 'tests/**'
+      - 'eval/**'
+      - 'terraform/**'
       - 'Dockerfile'
-      - 'requirements.txt'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements*.txt'
       - '.env.example'
+  schedule:
+    - cron: '23 20 1 * *'
+      timezone: 'Asia/Tokyo'
   workflow_dispatch:
 
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  trivy-scan:
-    name: Trivy Security Scan
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: actions
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.35.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.35.0
+        with:
+          category: /language:${{ matrix.language }}
+
+  trivy-scan:
+    name: Filesystem, IaC, secret, and image scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
     permissions:
       contents: read
-      security-events: write   # Upload SARIF to Security tab / SARIF をセキュリティタブにアップロード
+      security-events: write
       pull-requests: read
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
 
-      - name: Free disk space
-        run: |
-          docker system prune -af
-          docker builder prune -af
-
-      # ========== Step 1: Scan dependencies (filesystem) ==========
-      # ========== ステップ 1: 依存関係のスキャン（ファイルシステム） ==========
-      - name: Run Trivy vulnerability scanner (filesystem)
-        uses: aquasecurity/trivy-action@master
+      - name: Scan repository and Terraform configuration
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-fs-results.sarif'
-          severity: 'HIGH,CRITICAL'
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          format: sarif
+          output: trivy-fs-results.sarif
+          severity: HIGH,CRITICAL
           ignore-unfixed: true
 
-      # Upload results to GitHub Security tab
-      # 結果を GitHub セキュリティタブにアップロード
-      - name: Upload filesystem scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+      - name: Upload repository scan results
+        if: >-
+          always() &&
+          (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.35.0
         with:
-          sarif_file: 'trivy-fs-results.sarif'
-          category: 'trivy-filesystem'
+          sarif_file: trivy-fs-results.sarif
+          category: trivy-filesystem-iac-secrets
 
-      # ========== Step 2: Build image locally for scanning ==========
-      # ========== ステップ 2: スキャン用にイメージをローカルビルド ==========
+      - name: Gate repository findings
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.12.0
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Build Docker image for scanning
-        uses: docker/build-push-action@v6
+      - name: Build deployable image once for scanning
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           push: false
           load: true
           tags: security-scan:${{ github.sha }}
-          build-args: |
-            PRELOAD_EMBEDDING_MODEL=0
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ========== Step 3: Scan container image (OS + library) ==========
-      # ========== ステップ 3: コンテナイメージのスキャン（OS + ライブラリ） ==========
-      - name: Run Trivy vulnerability scanner (image)
-        uses: aquasecurity/trivy-action@master
+      - name: Scan deployable image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          scan-type: 'image'
-          image-ref: 'security-scan:${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-image-results.sarif'
-          severity: 'HIGH,CRITICAL'
+          scan-type: image
+          image-ref: security-scan:${{ github.sha }}
+          scanners: vuln
+          format: sarif
+          output: trivy-image-results.sarif
+          severity: HIGH,CRITICAL
           ignore-unfixed: true
 
-      - name: Upload image scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+      - name: Upload image scan results
+        if: >-
+          always() &&
+          (github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.35.0
         with:
-          sarif_file: 'trivy-image-results.sarif'
-          category: 'trivy-container'
+          sarif_file: trivy-image-results.sarif
+          category: trivy-container
 
-      # ========== Step 4: Gate - fail on HIGH/CRITICAL vulnerabilities ==========
-      # ========== ステップ 4: ゲート - HIGH/CRITICAL 脆弱性があれば PR をブロック ==========
-      - name: Check for critical vulnerabilities
-        uses: aquasecurity/trivy-action@master
+      - name: Gate deployable image findings
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          scan-type: 'image'
-          image-ref: 'security-scan:${{ github.sha }}'
-          format: 'table'
-          severity: 'HIGH,CRITICAL'
+          scan-type: image
+          image-ref: security-scan:${{ github.sha }}
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
 
-      # ========== Summary ==========
-      - name: Security scan passed
+      - name: Security summary
         if: success()
         run: |
-          echo "### ✅ Security Scan Passed" >> $GITHUB_STEP_SUMMARY
-          echo "No HIGH or CRITICAL vulnerabilities found." >> $GITHUB_STEP_SUMMARY
-          echo "HIGH または CRITICAL の脆弱性は検出されませんでした。" >> $GITHUB_STEP_SUMMARY
+          echo '### Security scan passed' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Repository, Terraform, secrets, dependencies, and the deployable image passed the HIGH/CRITICAL gate.' >> "$GITHUB_STEP_SUMMARY"
