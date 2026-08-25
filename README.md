@@ -156,16 +156,37 @@ curl -fsS http://127.0.0.1:8000/query \
 # Run local model comparison against synthetic golden fixture
 uv run python scripts/evaluate_retrieval.py \
   --backend local \
-  --model sentence-transformers/all-MiniLM-L6-v2 \
-  --model intfloat/multilingual-e5-small \
-  --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3
+  --model sentence-transformers/all-MiniLM-L6-v2 --revision 1110a243fdf4706b3f48f1d95db1a4f5529b4d41 \
+  --model intfloat/multilingual-e5-small --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3
 ```
+
+`--backend local` reads only `eval/corpus.jsonl` and `eval/golden.jsonl` and runs model
+inference on the CPU — no Azure resources, credentials, or index are required. Repeat
+`--revision` once for every `--model`, or omit all revisions.
+
+Result on the bundled fixture (9 passages, 6 queries, 2 each in `en` / `ja` / `zh`):
+
+| Model | Recall@1 | Recall@3 | MRR | `ja` Recall@1 |
+|---|---|---|---|---|
+| `all-MiniLM-L6-v2` (baseline) | 0.833 | 1.000 | 0.917 | 0.500 |
+| `multilingual-e5-small` (active) | **1.000** | 1.000 | **1.000** | **1.000** |
+| Delta | +0.167 | 0.000 | +0.083 | +0.500 |
+
+The entire gap comes from Japanese: the English-only baseline ranks one `ja` query
+second, which is exactly the retrieval failure the multilingual model was chosen to
+remove. The fixture is synthetic and deliberately small — these numbers are
+reproducible model-comparison evidence and a regression gate, not production RAG
+quality. The evaluator emits the same caveat in the `warning` field of its JSON output.
 
 #### 5. Local Quality Gate
 ```bash
 # Run full verification (formatting, linting, type checks, dependency audit, coverage)
-bash scripts/verify.sh
+# `uv run` puts .venv/bin on PATH, exactly as the CI job does.
+uv run bash scripts/verify.sh
 ```
+This is the same script CI executes, so a green run locally means the same gate passes
+in the pipeline: `ruff format --check`, `ruff check`, `mypy`, `pip-audit` against the
+exported lock, and `pytest` with an 80% coverage floor.
 
 #### 6. Rollback Procedure
 If canary health checks fail during deployment, the pipeline automatically aborts and retains 100% traffic on the active stable revision. To manually restore traffic:
@@ -184,12 +205,15 @@ az containerapp ingress traffic set \
 |---|---|---|
 | `AZURE_SEARCH_ENDPOINT` | - | Azure AI Search service endpoint URL |
 | `AZURE_SEARCH_API_KEY` | - | Azure AI Search admin/query key |
-| `AZURE_SEARCH_INDEX_NAME` | `ragdocs-v3` | Active target search index name |
+| `AZURE_SEARCH_INDEX_NAME` | `ragdocs-v3` | Index the running application queries |
+| `AZURE_SEARCH_INDEX_NAME_V3` | `ragdocs-v3` | Index targeted by `scripts/` (create, ingest, clear, evaluate); kept separate so a legacy 2.x index is never overwritten |
 | `OPENAI_API_KEY` | - | OpenAI API authentication key |
 | `OPENAI_MODEL` | `gpt-5.6-terra` | Generation model ID |
 | `OPENAI_REASONING_EFFORT` | `low` | Reasoning effort budget for generation |
-| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Preloaded embedding model identifier |
-| `EMBEDDING_MODEL_REVISION` | `614241f...` | Pinned Git commit hash of embedding model |
+| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Preloaded embedding model identifier (validated literal — any other value fails startup) |
+| `EMBEDDING_MODEL_REVISION` | `614241f...` | Pinned Git commit of the embedding model (validated literal) |
+| `EMBEDDING_MODEL_PATH` | - | Local model directory preloaded into the image; unset uses the Hugging Face cache |
+| `EMBEDDING_OFFLINE` | `false` | Forbid Hugging Face network access at runtime (`HF_HUB_OFFLINE` is also accepted) |
 | `EMBEDDING_BATCH_SIZE` | `16` | Batch size for inference encoding |
 | `SEARCH_TOP_K_DEFAULT` | `5` | Default number of retrieved contexts |
 | `SEARCH_TOP_K_MAX` | `10` | Maximum allowable top_k limit |
@@ -198,9 +222,11 @@ az containerapp ingress traffic set \
 
 ### Design Decisions & Trade-offs
 
-- **Local Embeddings vs. Embedding APIs**: Embedding locally eliminates per-query API latency and cost, but increases container image size (~1.5 GB) and baseline RAM requirement (allocated 2 GiB).
-- **Serverless Scale-to-Zero vs. Cold Start**: ACA scale-to-zero minimizes idle compute cost. Startup latency is mitigated via `/warmup` probes and maintaining `min_replicas = 1` in production environments.
-- **Index Isolation (`ragdocs-v3`)**: A distinct index name prevents incompatible vector space mixing when upgrading embedding models.
+- **Local Embeddings vs. Embedding APIs**: The service embeds in-container with `intfloat/multilingual-e5-small`, pinned to revision `614241f...`, which removes per-query API cost and network latency. The price is a larger image (~1.5 GB) and a 2 GiB memory allocation (`terraform/variables.tf`).
+- **Multilingual Model vs. English-Only Baseline**: `all-MiniLM-L6-v2` is smaller and faster, but English-only. On the bundled fixture it drops Japanese Recall@1 to 0.500 while the multilingual model reaches 1.000, so it serves only as the evaluation baseline and as the legacy-metadata case in the test suite — never as the serving model. Both models emit 384 dimensions, so the switch changed the vector space, not the index schema.
+- **Serverless Scale-to-Zero vs. Cold Start**: The lab defaults to `min_replicas = 0`, so an idle deployment costs nothing to run; the trade-off is a cold start that must load the model into memory. The canary script exercises `/warmup` before shifting any traffic, and a latency-sensitive production deployment would raise `min_replicas` to 1.
+- **Index Isolation (`ragdocs-v3`)**: A versioned index name keeps incompatible vector spaces apart when the embedding model changes. Every retrieved document also carries its `embeddingModel` and `embeddingRevision`, and the application rejects any result whose metadata differs from the running model, so a stale index fails loudly instead of silently returning wrong neighbours.
+- **Bash Canary vs. Operator**: Progressive delivery is a reviewable shell script (`scripts/deploy_canary.sh`) rather than a controller, keeping revision state and rollback logic transparent and debuggable from the workflow logs.
 
 ---
 
@@ -315,16 +341,34 @@ curl -fsS http://127.0.0.1:8000/query \
 # 本地对比 MiniLM 与 Multilingual-E5 模型在标准评测集上的表现
 uv run python scripts/evaluate_retrieval.py \
   --backend local \
-  --model sentence-transformers/all-MiniLM-L6-v2 \
-  --model intfloat/multilingual-e5-small \
-  --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3
+  --model sentence-transformers/all-MiniLM-L6-v2 --revision 1110a243fdf4706b3f48f1d95db1a4f5529b4d41 \
+  --model intfloat/multilingual-e5-small --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3
 ```
+
+`--backend local` 仅读取 `eval/corpus.jsonl` 与 `eval/golden.jsonl` 并在本地 CPU 上执行模型推理，
+不依赖任何 Azure 资源、密钥或索引。`--revision` 必须与 `--model` 成对出现（或全部省略）。
+
+在内置评测集（9 条 passage、6 条 query，`en` / `ja` / `zh` 各 2 条）上的实测结果：
+
+| 模型 | Recall@1 | Recall@3 | MRR | `ja` Recall@1 |
+|---|---|---|---|---|
+| `all-MiniLM-L6-v2`（基线） | 0.833 | 1.000 | 0.917 | 0.500 |
+| `multilingual-e5-small`（当前） | **1.000** | 1.000 | **1.000** | **1.000** |
+| 差值 | +0.167 | 0.000 | +0.083 | +0.500 |
+
+差距全部来自日语：英语单语基线把一条 `ja` 查询排到了第二位，而这正是选用多语言模型所要消除的
+检索失败。该评测集为合成数据且规模有限，因此这些指标是**可复现的模型选型证据与回归门禁**，
+并不代表生产环境的 RAG 质量；评测脚本也会在输出 JSON 的 `warning` 字段中声明这一点。
 
 #### 5. 本地质量门禁检查
 ```bash
 # 执行完整质检（代码格式、类型检查、依赖漏洞扫描、单元测试与覆盖率）
-bash scripts/verify.sh
+# uv run 会把 .venv/bin 加入 PATH，与 CI 中的执行方式一致。
+uv run bash scripts/verify.sh
 ```
+该脚本与 CI 所执行的完全相同，本地通过即代表流水线同一道门禁通过：
+`ruff format --check`、`ruff check`、`mypy`、针对导出锁文件的 `pip-audit`，
+以及带 80% 覆盖率下限的 `pytest`。
 
 #### 6. 异常回滚流程
 若部署期间金丝雀探针失败，流水线将自动终止并保留旧版本 100% 流量。如需手动回滚，可通过 Azure CLI 一键切回稳定版本：
@@ -343,12 +387,15 @@ az containerapp ingress traffic set \
 |---|---|---|
 | `AZURE_SEARCH_ENDPOINT` | - | Azure AI Search 服务终端地址 |
 | `AZURE_SEARCH_API_KEY` | - | Azure AI Search 管理/查询密钥 |
-| `AZURE_SEARCH_INDEX_NAME` | `ragdocs-v3` | 当前生效的目标搜索索引名称 |
+| `AZURE_SEARCH_INDEX_NAME` | `ragdocs-v3` | 在线服务查询所使用的索引名称 |
+| `AZURE_SEARCH_INDEX_NAME_V3` | `ragdocs-v3` | `scripts/` 下建索引、摄取、清理与评测所操作的索引；与线上变量分离，避免误覆盖 2.x 旧索引 |
 | `OPENAI_API_KEY` | - | OpenAI API 鉴权密钥 |
 | `OPENAI_MODEL` | `gpt-5.6-terra` | 答案生成模型名称 |
 | `OPENAI_REASONING_EFFORT` | `low` | 生成模型的推理思考预算 |
-| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | 预加载的本地 Embedding 模型标识 |
-| `EMBEDDING_MODEL_REVISION` | `614241f...` | 锁定的 Embedding 模型 Git Commit 摘要 |
+| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | 预加载的本地 Embedding 模型标识（字面量校验，填其他值将启动失败） |
+| `EMBEDDING_MODEL_REVISION` | `614241f...` | 锁定的 Embedding 模型 Git Commit（字面量校验） |
+| `EMBEDDING_MODEL_PATH` | - | 镜像内预置的模型目录；留空则使用本地 Hugging Face 缓存 |
+| `EMBEDDING_OFFLINE` | `false` | 运行时禁止访问 Hugging Face 网络（同时接受 `HF_HUB_OFFLINE`） |
 | `EMBEDDING_BATCH_SIZE` | `16` | 向量化推理批处理大小 |
 | `SEARCH_TOP_K_DEFAULT` | `5` | 默认检索召回数量 |
 | `SEARCH_TOP_K_MAX` | `10` | 允许的最大检索召回数量 |
@@ -357,9 +404,11 @@ az containerapp ingress traffic set \
 
 ### 架构设计与权衡
 
-- **本地 Embedding vs. API 调用**：在容器内本地运行模型消除了按次调用的 API 费用与网络延迟，但增加了镜像体积（~1.5 GB）和容器常驻内存开销（配置为 2 GiB）。
-- **Serverless 缩容到零 vs. 冷启动**：Azure Container Apps 支持缩容到 0 以节约成本；通过 `/warmup` 探针预热模型，生产环境推荐设置 `min_replicas = 1` 消除冷启动。
-- **独立索引空间隔离 (`ragdocs-v3`)**：升级 Embedding 模型时采用全新的版本化索引，杜绝不同向量空间混用导致的召回失效。
+- **本地 Embedding vs. API 调用**：服务在容器内使用 `intfloat/multilingual-e5-small`（版本锁定 `614241f...`）进行向量化，消除了按次调用的 API 费用与网络延迟；代价是镜像体积增大（~1.5 GB）与 2 GiB 内存分配（见 `terraform/variables.tf`）。
+- **多语言模型 vs. 英语单语基线**：`all-MiniLM-L6-v2` 更小更快，但只支持英语。在内置评测集上它的日语 Recall@1 仅 0.500，而多语言模型达到 1.000，因此它仅作为评测基线以及测试中的历史元数据用例存在，**不是线上服务模型**。两者输出均为 384 维，故切换改变的是向量空间而非索引 Schema。
+- **Serverless 缩容到零 vs. 冷启动**：本项目默认 `min_replicas = 0`，空闲时不产生计算费用；代价是冷启动需要把模型加载进内存。金丝雀脚本会在切流量前先打 `/warmup`；对延迟敏感的生产部署应将 `min_replicas` 提升到 1。
+- **独立索引空间隔离 (`ragdocs-v3`)**：版本化索引名避免升级 Embedding 模型时混用不兼容的向量空间。每条召回文档都携带 `embeddingModel` 与 `embeddingRevision`，服务端会拒绝与当前运行模型不一致的结果——索引过期时直接报错，而不是悄悄返回错误的近邻。
+- **Bash 金丝雀 vs. Operator**：渐进式发布采用可评审的 Shell 脚本（`scripts/deploy_canary.sh`）而非控制器，让版本状态与回滚逻辑在流水线日志中保持透明、可调试。
 
 ---
 
@@ -416,6 +465,23 @@ flowchart LR
 
 ---
 
+### 主要な技術的特徴
+
+1. **多言語ハイブリッド検索**
+   - モデルリビジョン固定：`intfloat/multilingual-e5-small`（`614241f...`）。
+   - ページメタデータ・コンテンツハッシュ・文書系譜を保持するトークナイザー認識チャンク分割。
+   - コサイン HNSW とセマンティックランカーを構成した `ragdocs-v3` インデックス。
+2. **根拠に基づく生成と安全性**
+   - 検索結果は信頼できない証拠として明示的な境界内に配置し、プロンプトインジェクションを抑制。
+   - 回答・引用・根拠フラグを Pydantic スキーマで検証。
+3. **可観測性と DORA メトリクス**
+   - Datadog APM（`ddtrace`）、構造化 JSON ログ、Service Catalog 連携。
+   - デプロイイベントを自動送信し、リードタイムとデプロイ頻度を追跡。
+4. **オフライン評価フレームワーク**
+   - 合成ベンチマーク（`eval/corpus.jsonl`、`eval/golden.jsonl`）により、LLM 生成と切り離して検索品質を評価。
+
+---
+
 ### 運用手順 (Runbook)
 
 #### 1. ローカル環境の構築
@@ -457,16 +523,36 @@ curl -fsS http://127.0.0.1:8000/query \
 # 標準評価セットを用いたモデル比較検証
 uv run python scripts/evaluate_retrieval.py \
   --backend local \
-  --model sentence-transformers/all-MiniLM-L6-v2 \
-  --model intfloat/multilingual-e5-small \
-  --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3
+  --model sentence-transformers/all-MiniLM-L6-v2 --revision 1110a243fdf4706b3f48f1d95db1a4f5529b4d41 \
+  --model intfloat/multilingual-e5-small --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3
 ```
+
+`--backend local` は `eval/corpus.jsonl` と `eval/golden.jsonl` のみを読み込み、CPU 上でモデル推論を
+実行します。Azure リソース・認証情報・インデックスは一切不要です。`--revision` は `--model` と
+同数を指定するか、すべて省略してください。
+
+同梱フィクスチャ（9 パッセージ / 6 クエリ、`en`・`ja`・`zh` 各 2 件）での実測結果：
+
+| モデル | Recall@1 | Recall@3 | MRR | `ja` Recall@1 |
+|---|---|---|---|---|
+| `all-MiniLM-L6-v2`（ベースライン） | 0.833 | 1.000 | 0.917 | 0.500 |
+| `multilingual-e5-small`（採用） | **1.000** | 1.000 | **1.000** | **1.000** |
+| 差分 | +0.167 | 0.000 | +0.083 | +0.500 |
+
+差分はすべて日本語に由来します。英語単言語のベースラインは `ja` クエリ 1 件を 2 位に落としており、
+これは多言語モデルを採用して解消したかった検索失敗そのものです。本フィクスチャは合成かつ小規模の
+ため、これらの数値は**再現可能なモデル比較の根拠および回帰ゲート**であり、本番 RAG の品質を示す
+ものではありません。評価スクリプトも出力 JSON の `warning` フィールドに同じ注意書きを出力します。
 
 #### 5. 品質ゲート（検証スクリプト）
 ```bash
 # フォーマット、型検査、脆弱性監査、テストを一括実行
-bash scripts/verify.sh
+# uv run により .venv/bin が PATH に追加され、CI と同じ実行条件になります。
+uv run bash scripts/verify.sh
 ```
+CI が実行するスクリプトと同一のため、ローカルで成功すればパイプラインでも同じゲートを通過します：
+`ruff format --check`、`ruff check`、`mypy`、エクスポートしたロックに対する `pip-audit`、
+カバレッジ下限 80% の `pytest`。
 
 #### 6. ロールバック手順
 デプロイ中にカナリアリビジョンのヘルスチェックが失敗した場合、パイプラインは自動停止し旧リビジョンのトラフィックを 100% に維持します。手動で戻す場合：
@@ -479,8 +565,31 @@ az containerapp ingress traffic set \
 
 ---
 
+### 環境変数リファレンス
+
+| 環境変数 | 既定値 | 説明 |
+|---|---|---|
+| `AZURE_SEARCH_ENDPOINT` | - | Azure AI Search のエンドポイント URL |
+| `AZURE_SEARCH_API_KEY` | - | Azure AI Search の管理／クエリキー |
+| `AZURE_SEARCH_INDEX_NAME` | `ragdocs-v3` | 実行中アプリケーションが参照するインデックス |
+| `AZURE_SEARCH_INDEX_NAME_V3` | `ragdocs-v3` | `scripts/`（作成・投入・削除・評価）が対象とするインデックス。2.x の旧インデックスを誤って上書きしないよう分離 |
+| `OPENAI_API_KEY` | - | OpenAI API の認証キー |
+| `OPENAI_MODEL` | `gpt-5.6-terra` | 生成に使用するモデル ID |
+| `OPENAI_REASONING_EFFORT` | `low` | 生成時の推論バジェット |
+| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | プリロードする Embedding モデル（リテラル検証。他の値は起動時に失敗） |
+| `EMBEDDING_MODEL_REVISION` | `614241f...` | 固定された Embedding モデルの Git コミット（リテラル検証） |
+| `EMBEDDING_MODEL_PATH` | - | イメージに同梱したモデルディレクトリ。未設定なら Hugging Face キャッシュを使用 |
+| `EMBEDDING_OFFLINE` | `false` | 実行時に Hugging Face へのネットワークアクセスを禁止（`HF_HUB_OFFLINE` も可） |
+| `EMBEDDING_BATCH_SIZE` | `16` | 推論時のバッチサイズ |
+| `SEARCH_TOP_K_DEFAULT` | `5` | 取得コンテキスト数の既定値 |
+| `SEARCH_TOP_K_MAX` | `10` | 指定可能な `top_k` の上限 |
+
+---
+
 ### 主要な設計判断とトレードオフ
 
-- **ローカル Embedding vs. API 呼び出し**: ローカル実行により API コストとレイテンシを削減できますが、コンテナイメージサイズ（約 1.5 GB）とメモリ使用量（2 GiB を推奨）が増加します。
-- **Serverless ゼロスケール vs. コールドスタート**: ACA のゼロスケールはコスト削減に優れます。コールドスタートの影響は `/warmup` 呼び出しや本番環境で `min_replicas = 1` を維持することで抑制します。
-- **インデックスのバージョン分離 (`ragdocs-v3`)**: Embedding モデルを更新する際、独立したインデックスを使用することで互換性のないベクトル空間の混在を防ぎます。
+- **ローカル Embedding vs. API 呼び出し**: 本サービスはコンテナ内で `intfloat/multilingual-e5-small`（リビジョン `614241f...` に固定）を実行し、クエリごとの API コストとネットワークレイテンシを排除しています。代償はイメージサイズ（約 1.5 GB）とメモリ割り当て 2 GiB（`terraform/variables.tf`）です。
+- **多言語モデル vs. 英語単言語ベースライン**: `all-MiniLM-L6-v2` はより小型かつ高速ですが英語専用です。同梱フィクスチャでは日本語 Recall@1 が 0.500 に留まる一方、多言語モデルは 1.000 に達します。したがって MiniLM は評価用ベースラインおよびテストの旧メタデータ検証用途に限定され、**本番の推論モデルではありません**。両モデルとも 384 次元のため、切り替えで変わったのはベクトル空間であってインデックススキーマではありません。
+- **Serverless ゼロスケール vs. コールドスタート**: 本ラボの既定値は `min_replicas = 0` で、アイドル時のコンピュートコストは発生しません。代償として、コールドスタート時にモデルをメモリへロードする必要があります。カナリアスクリプトはトラフィック移行前に `/warmup` を実行しており、レイテンシ要件が厳しい本番環境では `min_replicas` を 1 に引き上げます。
+- **インデックスのバージョン分離 (`ragdocs-v3`)**: バージョン付きインデックス名により、Embedding モデル更新時に互換性のないベクトル空間が混在することを防ぎます。各検索結果は `embeddingModel` と `embeddingRevision` を保持し、実行中のモデルと一致しない結果はアプリケーション側で拒否されるため、古いインデックスは沈黙して誤った近傍を返すのではなく明示的に失敗します。
+- **Bash カナリア vs. Operator**: 段階的リリースはコントローラではなくレビュー可能なシェルスクリプト（`scripts/deploy_canary.sh`）で実装し、リビジョン状態とロールバック処理をワークフローログ上で透明かつデバッグ可能に保っています。
