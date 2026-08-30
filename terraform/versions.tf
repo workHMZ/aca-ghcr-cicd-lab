@@ -1,5 +1,5 @@
 terraform {
-  required_version = "~> 1.15.0"
+  required_version = "~> 1.15"
 
   # Configure the Azure Storage account/container/key through `terraform init
   # -backend-config=...`. This prevents the service-principal password resource
