@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Create the versioned Azure AI Search index used by the v3 corpus.
+"""Create the versioned Azure AI Search index used by the v4 corpus.
+
+v4 adds language-specific lexical fields (the same text analysed by the
+Microsoft Chinese and Japanese analyzers), a section ``title`` used by the
+semantic ranker, page ranges, and the embedding runtime variant.
 
 The command never updates or replaces an existing index by default. Passing
 ``--delete-existing`` is required before an index with the same name is
@@ -40,10 +44,15 @@ from dotenv import load_dotenv
 
 from app.embed import get_dimension
 
-DEFAULT_INDEX_NAME = "ragdocs-v3"
+DEFAULT_INDEX_NAME = "ragdocs-v4"
 HNSW_CONFIG_NAME = "hnsw-cosine"
 VECTOR_PROFILE_NAME = "hnsw-cosine-profile"
 SEMANTIC_CONFIGURATION_NAME = "rag-semantic"
+# Hidden lexical copies of ``content`` with word-segmenting analyzers.
+LANGUAGE_FIELDS = {
+    "contentZh": "zh-Hans.microsoft",
+    "contentJa": "ja.microsoft",
+}
 
 
 def _required_env(name: str) -> str:
@@ -55,7 +64,7 @@ def _required_env(name: str) -> str:
 
 def _default_index_name() -> str:
     # Intentionally do not fall back to the legacy AZURE_SEARCH_INDEX_NAME.
-    return os.getenv("AZURE_SEARCH_INDEX_NAME_V3", DEFAULT_INDEX_NAME).strip() or DEFAULT_INDEX_NAME
+    return os.getenv("AZURE_SEARCH_INDEX_NAME_V4", DEFAULT_INDEX_NAME).strip() or DEFAULT_INDEX_NAME
 
 
 def build_index(index_name: str, dimension: int) -> SearchIndex:
@@ -66,16 +75,36 @@ def build_index(index_name: str, dimension: int) -> SearchIndex:
 
     fields = [
         SimpleField(name="id", type=SearchFieldDataType.String, key=True),
+        # Language-neutral field: returned to clients and read by the semantic
+        # ranker. standard.lucene splits CJK into single characters, so the
+        # hidden copies below provide word-level BM25 for Chinese and Japanese.
         SearchableField(
             name="content",
             type=SearchFieldDataType.String,
             analyzer_name="standard.lucene",
+        ),
+        *(
+            SearchableField(
+                name=field_name,
+                type=SearchFieldDataType.String,
+                analyzer_name=analyzer,
+                hidden=True,
+            )
+            for field_name, analyzer in LANGUAGE_FIELDS.items()
+        ),
+        SearchableField(
+            name="title",
+            type=SearchFieldDataType.String,
+            analyzer_name="zh-Hans.microsoft",
         ),
         SearchField(
             name="contentVector",
             type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
             searchable=True,
             hidden=True,
+            # Vectors are only used for ANN search; not storing a retrievable
+            # copy halves vector storage on the 50 MB free tier.
+            stored=False,
             vector_search_dimensions=dimension,
             vector_search_profile_name=VECTOR_PROFILE_NAME,
         ),
@@ -97,6 +126,11 @@ def build_index(index_name: str, dimension: int) -> SearchIndex:
             sortable=True,
         ),
         SimpleField(
+            name="pageEnd",
+            type=SearchFieldDataType.Int32,
+            filterable=True,
+        ),
+        SimpleField(
             name="chunkIndex",
             type=SearchFieldDataType.Int32,
             filterable=True,
@@ -115,6 +149,11 @@ def build_index(index_name: str, dimension: int) -> SearchIndex:
         ),
         SimpleField(
             name="embeddingRevision",
+            type=SearchFieldDataType.String,
+            filterable=True,
+        ),
+        SimpleField(
+            name="embeddingVariant",
             type=SearchFieldDataType.String,
             filterable=True,
         ),
@@ -151,8 +190,8 @@ def build_index(index_name: str, dimension: int) -> SearchIndex:
             SemanticConfiguration(
                 name=SEMANTIC_CONFIGURATION_NAME,
                 prioritized_fields=SemanticPrioritizedFields(
+                    title_field=SemanticField(field_name="title"),
                     content_fields=[SemanticField(field_name="content")],
-                    keywords_fields=[SemanticField(field_name="source")],
                 ),
             )
         ],
@@ -206,7 +245,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--index-name",
         default=None,
-        help="Target index (default: AZURE_SEARCH_INDEX_NAME_V3 or ragdocs-v3)",
+        help="Target index (default: AZURE_SEARCH_INDEX_NAME_V4 or ragdocs-v4)",
     )
     parser.add_argument(
         "--delete-existing",

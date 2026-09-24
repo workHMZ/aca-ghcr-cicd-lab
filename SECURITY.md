@@ -2,9 +2,8 @@
 
 ## Supported version
 
-Until `v3.0.0` is published, security fixes apply to the unreleased 3.0 candidate on `main`.
-After release, fixes apply to the latest `3.x` line. Earlier interview-lab releases are retained
-for learning and are not supported.
+Security fixes apply to the latest `3.x` line on `main` (currently `3.1.0`). Earlier
+interview-lab releases are retained for learning and are not supported.
 
 ## Reporting a vulnerability
 
@@ -18,7 +17,10 @@ This repository is an interview and learning project, not a hosted multi-tenant 
 
 - The FastAPI ingress is public unless authentication is configured outside the app. Do not ingest confidential documents into a public deployment.
 - Retrieved text is untrusted data. The generation prompt isolates it as context, but prompt injection cannot be eliminated by prompting alone.
-- Request length and `top_k` are bounded. Production deployments should additionally enable identity-aware access, rate limiting, request quotas, and abuse monitoring.
+- Request length and `top_k` are bounded, and uncached queries are capped per minute and per UTC day
+  (`QUERY_RATE_LIMIT_PER_MINUTE`, `QUERY_DAILY_LIMIT`) to bound OpenAI and semantic-ranker spend on the
+  anonymous endpoint. The budget is in-process (per replica); production deployments should add
+  identity-aware access, a shared/edge rate limiter, and abuse monitoring.
 - Azure AI Search and OpenAI credentials are injected as secrets and must never be committed. Rotate a credential immediately if it is exposed.
 - A query sends the user's question and retrieved chunks to OpenAI for generation, even with
   `store=false`. The API response also returns full retrieved chunk text to the caller. Corpus
@@ -28,6 +30,10 @@ This repository is an interview and learning project, not a hosted multi-tenant 
   so initialization must use the declared Azure Storage backend with access control, encryption,
   locking, and a reviewed state-retention policy; never use or commit a local state file.
 - PDF ingestion processes untrusted files. Run ingestion in an isolated environment, keep `pypdf` patched, and enforce file-size/page/time limits before exposing uploads to users.
+  Ingestion is an operator-only CLI (`pypdf` is not in the serving image); use `--glob` to select
+  exactly the public documents, because everything ingested is returned verbatim by the public API.
+- The embedding model is downloaded from an immutable Hugging Face revision and every file is
+  checked against a pinned SHA-256 (`app/model_manifest.py`) before it enters the image.
 
 ## Dependency and image controls
 

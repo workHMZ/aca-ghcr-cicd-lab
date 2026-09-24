@@ -11,6 +11,9 @@ RESOURCE_GROUP="rg-genai-student-jp"
 LOCATION="japaneast"  # Choose: japaneast, eastus, westeurope, etc.
 CONTAINER_APP_ENV="rag-env"
 CONTAINER_APP_NAME="serverless-rag-api"
+LOG_ANALYTICS_WORKSPACE="log-${CONTAINER_APP_ENV}"
+# 0.16 GB/day keeps log ingestion inside the 5 GB/month free allowance.
+LOG_DAILY_QUOTA_GB="0.16"
 
 # Colors for output
 RED='\033[0;31m'
@@ -44,13 +47,36 @@ az group create \
     --output none
 echo -e "${GREEN}✓ Resource Group created${NC}"
 
+# Create a capped Log Analytics workspace explicitly; letting
+# `az containerapp env create` generate one leaves it without a daily cap.
+echo "Creating Log Analytics workspace: $LOG_ANALYTICS_WORKSPACE..."
+az monitor log-analytics workspace create \
+    --resource-group "$RESOURCE_GROUP" \
+    --workspace-name "$LOG_ANALYTICS_WORKSPACE" \
+    --location "$LOCATION" \
+    --retention-time 30 \
+    --quota "$LOG_DAILY_QUOTA_GB" \
+    --output none
+LOG_WORKSPACE_ID=$(az monitor log-analytics workspace show \
+    --resource-group "$RESOURCE_GROUP" \
+    --workspace-name "$LOG_ANALYTICS_WORKSPACE" \
+    --query customerId -o tsv)
+LOG_WORKSPACE_KEY=$(az monitor log-analytics workspace get-shared-keys \
+    --resource-group "$RESOURCE_GROUP" \
+    --workspace-name "$LOG_ANALYTICS_WORKSPACE" \
+    --query primarySharedKey -o tsv)
+echo -e "${GREEN}✓ Log Analytics workspace created (daily cap ${LOG_DAILY_QUOTA_GB} GB)${NC}"
+
 # Create Container Apps Environment
 echo "Creating Container Apps Environment: $CONTAINER_APP_ENV..."
 az containerapp env create \
     --name "$CONTAINER_APP_ENV" \
     --resource-group "$RESOURCE_GROUP" \
     --location "$LOCATION" \
+    --logs-workspace-id "$LOG_WORKSPACE_ID" \
+    --logs-workspace-key "$LOG_WORKSPACE_KEY" \
     --output none
+unset LOG_WORKSPACE_KEY
 echo -e "${GREEN}✓ Container Apps Environment created${NC}"
 
 # Create Container App (placeholder image, will be updated by CD)
@@ -65,8 +91,8 @@ az containerapp create \
     --revisions-mode multiple \
     --min-replicas 0 \
     --max-replicas 1 \
-    --cpu 1.0 \
-    --memory 2Gi \
+    --cpu 0.5 \
+    --memory 1Gi \
     --output none
 
 # Get the app URL
@@ -125,7 +151,7 @@ echo ""
 # Configure the application only when required values arrive via the process
 # environment. Shell history and terminal output never contain secret values.
 if [ -n "${AZURE_SEARCH_ENDPOINT:-}" ] && [ -n "${AZURE_SEARCH_API_KEY:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
-    echo "Configuring named Container Apps secrets and 3.0 environment..."
+    echo "Configuring named Container Apps secrets and 3.1 environment..."
 
     secret_args=(
         "azure-search-api-key=$AZURE_SEARCH_API_KEY"
@@ -134,7 +160,7 @@ if [ -n "${AZURE_SEARCH_ENDPOINT:-}" ] && [ -n "${AZURE_SEARCH_API_KEY:-}" ] && 
     app_env_args=(
         "AZURE_SEARCH_ENDPOINT=$AZURE_SEARCH_ENDPOINT"
         "AZURE_SEARCH_API_KEY=secretref:azure-search-api-key"
-        "AZURE_SEARCH_INDEX_NAME=ragdocs-v3"
+        "AZURE_SEARCH_INDEX_NAME=ragdocs-v4"
         "OPENAI_API_KEY=secretref:openai-key"
         "OPENAI_MODEL=gpt-5.6-terra"
         "OPENAI_MAX_OUTPUT_TOKENS=1200"
@@ -142,7 +168,10 @@ if [ -n "${AZURE_SEARCH_ENDPOINT:-}" ] && [ -n "${AZURE_SEARCH_API_KEY:-}" ] && 
         "OPENAI_VERBOSITY=low"
         "EMBEDDING_MODEL=intfloat/multilingual-e5-small"
         "EMBEDDING_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3"
+        "EMBEDDING_VARIANT=onnx-qint8"
         "EMBEDDING_OFFLINE=1"
+        "EMBEDDING_THREADS=1"
+        "DD_TRACE_ENABLED=false"
     )
 
     if [ -n "${DD_API_KEY:-}" ]; then

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Delete every document from an explicitly confirmed v3 search index."""
+"""Delete every document from an explicitly confirmed search index."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 from dotenv import load_dotenv
 
-DEFAULT_INDEX_NAME = "ragdocs-v3"
+DEFAULT_INDEX_NAME = "ragdocs-v4"
 
 
 def _required_env(name: str) -> str:
@@ -25,7 +25,7 @@ def _required_env(name: str) -> str:
 
 def _default_index_name() -> str:
     # Never clear a legacy AZURE_SEARCH_INDEX_NAME by accident.
-    return os.getenv("AZURE_SEARCH_INDEX_NAME_V3", DEFAULT_INDEX_NAME).strip() or DEFAULT_INDEX_NAME
+    return os.getenv("AZURE_SEARCH_INDEX_NAME_V4", DEFAULT_INDEX_NAME).strip() or DEFAULT_INDEX_NAME
 
 
 def _batched[T](values: Sequence[T], batch_size: int) -> Iterator[Sequence[T]]:
@@ -105,7 +105,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--index-name",
         default=None,
-        help="Target index (default: AZURE_SEARCH_INDEX_NAME_V3 or ragdocs-v3)",
+        help="Target index (default: AZURE_SEARCH_INDEX_NAME_V4 or ragdocs-v4)",
     )
     parser.add_argument("--batch-size", type=_positive_batch_size, default=100)
     parser.add_argument(

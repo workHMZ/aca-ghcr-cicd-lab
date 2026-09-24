@@ -70,7 +70,7 @@ check_health() {
 # Exercise the complete RAG path without logging the question, response body,
 # or optional bearer token. Requiring at least one context guarantees that the
 # request reached both Azure AI Search and OpenAI instead of taking the
-# no-results shortcut.
+# no-results shortcut, and Cache-Control: no-cache bypasses the answer cache.
 check_query() {
   local url="$1"
   local attempts="${2:-2}"
@@ -78,6 +78,7 @@ check_query() {
   local -a request_headers=(
     -H "Accept: application/json"
     -H "Content-Type: application/json"
+    -H "Cache-Control: no-cache"
   )
 
   payload=$(CANARY_QUERY="$CANARY_QUERY" CANARY_TOP_K="$CANARY_TOP_K" python3 -c \
@@ -187,6 +188,20 @@ rollback() {
   return 0
 }
 
+# Deactivate every active revision except the promoted one. Inactive revisions
+# cost nothing, stay available as rollback targets, and are capped by
+# max_inactive_revisions instead of accumulating as active zero-weight revisions.
+deactivate_other_revisions() {
+  local keep="$1"
+  local revisions
+  revisions=$(az containerapp revision list -g "$RG" -n "$APP" \
+    --query "[?properties.active && name!='${keep}'].name" -o tsv 2>/dev/null || true)
+  for revision in $revisions; do
+    echo "Deactivating $revision"
+    az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$revision" >/dev/null 2>&1 || true
+  done
+}
+
 on_exit() {
   local exit_code=$?
 
@@ -267,6 +282,7 @@ if [ -z "${STABLE_REV:-}" ] || [ "$STABLE_REV" = "None" ] || [ "$NEW_REV" = "$ST
     echo "Initial deployment RAG query failed"
     exit 1
   fi
+  deactivate_other_revisions "$NEW_REV"
   echo "Initial deployment complete"
   exit 0
 fi
@@ -329,9 +345,9 @@ if ! verify_traffic "$NEW_REV" 100 8; then exit 1; fi
 if ! check_health "$MAIN_URL" 10 24; then exit 1; fi
 if ! check_query "${MAIN_URL%/health}/query" 2; then exit 1; fi
 
-# Deactivate old revision / 旧リビジョンを無効化
-echo "Deactivating old revision: $STABLE_REV"
-az containerapp revision deactivate -g "$RG" -n "$APP" --revision "$STABLE_REV" 2>/dev/null || true
-
 ROLLBACK_ARMED=0
-echo "Deployment complete: $NEW_REV (100%), $STABLE_REV (deactivated)"
+
+# Deactivate the previous stable and any leftover active revisions
+# 旧リビジョンと残存するアクティブなリビジョンを無効化
+deactivate_other_revisions "$NEW_REV"
+echo "Deployment complete: $NEW_REV (100%), $STABLE_REV and older revisions deactivated"

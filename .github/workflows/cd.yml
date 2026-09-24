@@ -30,6 +30,12 @@ env:
   REGISTRY: ghcr.io
   AZURE_RESOURCE_GROUP: rg-genai-student-jp
   AZURE_CONTAINER_APP_NAME: serverless-rag-api
+  # Keep in sync with terraform/variables.tf. 0.5 vCPU / 1 GiB fits the ONNX
+  # int8 service and triples the free-grant runtime of the old 1.5 vCPU / 3 GiB.
+  CONTAINER_CPU: '0.5'
+  CONTAINER_MEMORY: 1Gi
+  AZURE_SEARCH_INDEX_NAME: ragdocs-v4
+  EMBEDDING_VARIANT: onnx-qint8
 
 jobs:
   deploy:
@@ -48,7 +54,7 @@ jobs:
           ref: ${{ inputs.commit_sha }}
 
       - name: Log in to Azure
-        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
@@ -119,7 +125,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.0.5
+          cosign-release: v3.1.3
 
       - name: Verify exact CI workflow identity and image signature
         run: |
@@ -209,6 +215,9 @@ jobs:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
           STABLE_REVISION: ${{ steps.stable.outputs.stable_revision }}
+          # Optional override; when unset, tracing follows whether the Datadog
+          # Agent sidecar is deployed (terraform enable_datadog_sidecar).
+          DD_TRACE_ENABLED_OVERRIDE: ${{ vars.DD_TRACE_ENABLED }}
         run: |
           set -euo pipefail
           stable_revision="${STABLE_REVISION}"
@@ -230,6 +239,18 @@ jobs:
           trap 'exit 130' INT
           trap 'exit 143' TERM
 
+          if [ -n "${DD_TRACE_ENABLED_OVERRIDE}" ]; then
+            dd_trace_enabled="${DD_TRACE_ENABLED_OVERRIDE}"
+          else
+            sidecars=$(az containerapp show \
+              --name "${AZURE_CONTAINER_APP_NAME}" \
+              --resource-group "${AZURE_RESOURCE_GROUP}" \
+              --query "length(properties.template.containers[?name=='datadog-agent'])" \
+              --output tsv)
+            if [ "${sidecars:-0}" -gt 0 ]; then dd_trace_enabled=true; else dd_trace_enabled=false; fi
+          fi
+          echo "Datadog tracing: ${dd_trace_enabled}"
+
           az containerapp registry set \
             --name "${AZURE_CONTAINER_APP_NAME}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
@@ -242,15 +263,18 @@ jobs:
             --resource-group "${AZURE_RESOURCE_GROUP}" \
             --container-name serverless-rag-api \
             --image "${{ steps.image.outputs.image_url }}" \
-            --cpu 1.0 \
-            --memory 2Gi \
+            --cpu "${CONTAINER_CPU}" \
+            --memory "${CONTAINER_MEMORY}" \
             --set-env-vars \
-              AZURE_SEARCH_INDEX_NAME=ragdocs-v3 \
+              "AZURE_SEARCH_INDEX_NAME=${AZURE_SEARCH_INDEX_NAME}" \
               OPENAI_MODEL=gpt-5.6-terra \
               OPENAI_REASONING_EFFORT=low \
               EMBEDDING_MODEL=intfloat/multilingual-e5-small \
               EMBEDDING_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3 \
+              "EMBEDDING_VARIANT=${EMBEDDING_VARIANT}" \
               EMBEDDING_OFFLINE=1 \
+              EMBEDDING_THREADS=1 \
+              "DD_TRACE_ENABLED=${dd_trace_enabled}" \
             --output none
 
           candidate_revision=$(az containerapp show \
@@ -317,6 +341,7 @@ jobs:
             echo "- App: \`${{ env.AZURE_CONTAINER_APP_NAME }}\`"
             echo "- Image: \`${{ steps.image.outputs.image_repo }}@${{ steps.image.outputs.image_digest }}\`"
             echo "- Commit: \`${{ steps.image.outputs.commit_sha }}\`"
+            echo "- Resources: ${CONTAINER_CPU} vCPU / ${CONTAINER_MEMORY}, index \`${AZURE_SEARCH_INDEX_NAME}\`"
             echo '- Strategy: real query at 0%, verified 10%/50% weights, real query at 100%'
             echo '- Signature: exact workflow identity, main ref, and commit SHA verified'
           } >> "$GITHUB_STEP_SUMMARY"
