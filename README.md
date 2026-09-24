@@ -240,15 +240,15 @@ uv run python scripts/evaluate_retrieval.py \
 ```
 The Azure run also prints `reranker_calibration`: how many labelled and unlabelled top-k contexts each candidate floor would keep. The served floor of 1.5 keeps every labelled hit (lowest 1.90) while off-topic questions peak between 0.5 and 1.6.
 
-`--backend local` reads only `eval/corpus.jsonl` and `eval/golden.jsonl`; the pinned E5 model runs through the production ONNX encoder, other models through sentence-transformers. Result on the bundled fixture (9 passages, 6 queries, 2 each in `en` / `ja` / `zh`):
+`--backend local` reads only `eval/corpus.jsonl` and `eval/golden.jsonl`; the pinned E5 model runs through the production ONNX encoder, other models through sentence-transformers. Result on the bundled fixture (9 passages, 6 queries, 2 each in `en` / `ja` / `zh`), measured in CI on x86:
 
 | Model | Recall@1 | Recall@3 | MRR | `ja` Recall@1 |
 |---|---|---|---|---|
-| `all-MiniLM-L6-v2` (baseline, torch) | 0.833 | 1.000 | 0.917 | 0.500 |
-| `multilingual-e5-small` (served, ONNX int8) | **1.000** | 1.000 | **1.000** | **1.000** |
-| Delta | +0.167 | 0.000 | +0.083 | +0.500 |
+| `all-MiniLM-L6-v2` (English-only baseline) | 0.833 | 1.000 | 0.917 | 0.500 |
+| `multilingual-e5-small`, fp32 (3.0) | 1.000 | 1.000 | 1.000 | 1.000 |
+| `multilingual-e5-small`, ONNX int8 (3.1, served) | 0.833 | 1.000 | 0.917 | 0.500 |
 
-The fixture is synthetic and deliberately small — a regression gate, not production quality; the evaluator repeats this in its `warning` field.
+The int8 miss is a near tie: for `ja-gc` the expected passage scores 0.798 vs 0.794 even in fp32, and int8 kernels on x86 swap the pair (0.792 vs 0.795) while ARM keeps it first; the English-only baseline misses the same query by 0.07. The CI gate therefore requires every expected passage in the top 3 for every language and MRR ≥ 0.9 instead of an exact top-1. The fixture is synthetic and deliberately small — a regression gate, not a quality claim; quality numbers come from the 50-question benchmark above.
 
 #### 5. Local Quality Gate
 ```bash
@@ -497,15 +497,15 @@ uv run python scripts/evaluate_retrieval.py \
 ```
 Azure 评测还会输出 `reranker_calibration`：每个候选下限在 top-k 中会保留多少标注命中与非标注结果。线上下限 1.5 保留了全部标注命中（最低 1.90），而离题问题的最高分在 0.5–1.6 之间。
 
-`--backend local` 仅读取 `eval/corpus.jsonl` 与 `eval/golden.jsonl`；锁定的 E5 模型走线上同款 ONNX 编码器，其他模型走 sentence-transformers。内置评测集（9 条 passage、6 条 query，`en` / `ja` / `zh` 各 2 条）结果：
+`--backend local` 仅读取 `eval/corpus.jsonl` 与 `eval/golden.jsonl`；锁定的 E5 模型走线上同款 ONNX 编码器，其他模型走 sentence-transformers。内置评测集（9 条 passage、6 条 query，`en` / `ja` / `zh` 各 2 条）在 CI（x86）上的结果：
 
 | 模型 | Recall@1 | Recall@3 | MRR | `ja` Recall@1 |
 |---|---|---|---|---|
-| `all-MiniLM-L6-v2`（基线，torch） | 0.833 | 1.000 | 0.917 | 0.500 |
-| `multilingual-e5-small`（线上，ONNX int8） | **1.000** | 1.000 | **1.000** | **1.000** |
-| 差值 | +0.167 | 0.000 | +0.083 | +0.500 |
+| `all-MiniLM-L6-v2`（英语单语基线） | 0.833 | 1.000 | 0.917 | 0.500 |
+| `multilingual-e5-small`，fp32（3.0） | 1.000 | 1.000 | 1.000 | 1.000 |
+| `multilingual-e5-small`，ONNX int8（3.1，线上） | 0.833 | 1.000 | 0.917 | 0.500 |
 
-该评测集为合成数据且规模很小，只作为回归门禁，不代表生产质量；评测脚本也会在 `warning` 字段中声明。
+int8 丢掉的那一题是接近平局：`ja-gc` 的正确段落即使在 fp32 下也只以 0.798 对 0.794 领先，x86 上的 int8 内核把两者顺序换了（0.792 对 0.795），ARM 上则仍排第一；英语单语基线在同一题上差了 0.07。因此 CI 门禁要求每种语言的正确段落都在前 3 名内、MRR ≥ 0.9，而不是精确的 top-1。该评测集为合成数据且规模很小，只作为回归门禁，不作为质量结论；质量数据以上文的 50 题评测为准。
 
 #### 5. 本地质量门禁检查
 ```bash
@@ -754,15 +754,15 @@ uv run python scripts/evaluate_retrieval.py \
 ```
 Azure 評価は `reranker_calibration` も出力し、候補となる各下限が top-k のうちラベル付きヒットとそれ以外をどれだけ残すかを示します。本番の下限 1.5 はラベル付きヒットをすべて保持し（最小 1.90）、無関係な質問の最高スコアは 0.5–1.6 に収まります。
 
-`--backend local` は `eval/corpus.jsonl` と `eval/golden.jsonl` のみを読み込みます。固定の E5 モデルは本番と同じ ONNX エンコーダーで、その他のモデルは sentence-transformers で推論します。同梱フィクスチャ（9 パッセージ / 6 クエリ、`en`・`ja`・`zh` 各 2 件）での結果：
+`--backend local` は `eval/corpus.jsonl` と `eval/golden.jsonl` のみを読み込みます。固定の E5 モデルは本番と同じ ONNX エンコーダーで、その他のモデルは sentence-transformers で推論します。同梱フィクスチャ（9 パッセージ / 6 クエリ、`en`・`ja`・`zh` 各 2 件）の CI（x86）での結果：
 
 | モデル | Recall@1 | Recall@3 | MRR | `ja` Recall@1 |
 |---|---|---|---|---|
-| `all-MiniLM-L6-v2`（ベースライン、torch） | 0.833 | 1.000 | 0.917 | 0.500 |
-| `multilingual-e5-small`（本番、ONNX int8） | **1.000** | 1.000 | **1.000** | **1.000** |
-| 差分 | +0.167 | 0.000 | +0.083 | +0.500 |
+| `all-MiniLM-L6-v2`（英語単言語ベースライン） | 0.833 | 1.000 | 0.917 | 0.500 |
+| `multilingual-e5-small`、fp32（3.0） | 1.000 | 1.000 | 1.000 | 1.000 |
+| `multilingual-e5-small`、ONNX int8（3.1、本番） | 0.833 | 1.000 | 0.917 | 0.500 |
 
-本フィクスチャは合成かつ小規模で、回帰ゲートであり本番品質を示すものではありません。評価スクリプトも `warning` フィールドで同じ注意を出力します。
+int8 で外れた 1 問はほぼ同点です。`ja-gc` の正解パッセージは fp32 でも 0.798 対 0.794 の僅差で、x86 の int8 カーネルでは順位が入れ替わり（0.792 対 0.795）、ARM では 1 位のままです。英語単言語ベースラインは同じ質問で 0.07 差で外しています。そのため CI ゲートは完全な top-1 ではなく、全言語で正解パッセージが上位 3 件に入ることと MRR ≥ 0.9 を要求します。本フィクスチャは合成かつ小規模の回帰ゲートであり品質の根拠ではありません。品質の数値は上記の 50 問評価を参照してください。
 
 #### 5. 品質ゲート（検証スクリプト）
 ```bash
