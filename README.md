@@ -105,9 +105,12 @@ Where the gain comes from:
 | Replica size | 1 vCPU / 2 GiB + Datadog sidecar 0.5 vCPU / 1 GiB | **0.5 vCPU / 1 GiB** (+0.5 vCPU / 1 GiB with the optional Datadog sidecar) |
 | Replica runtime covered by the free grant | ~33 h / month | **~100 h / month** (~50 h with the sidecar) |
 | `/ready` endpoint | runs an embedding inference on every call | flag check after a one-time background load |
-| Query embedding latency (1 thread) | — | 77 ms p50 on a Celeron J4125 (no AVX2), 3 ms on Apple silicon |
+| Image size (compressed) | 736 MB | **220 MB** |
+| Cold start (scale from zero to first `/health`) | ~60 s | **~25 s** |
+| Memory after warmup (CI smoke test, 0.5 vCPU / 1 GiB) | — | 482 MiB (538 MiB with tracing) |
+| Query embedding latency (1 thread) | — | ~6 ms in production, 77 ms p50 on a Celeron J4125 (no AVX2) |
 
-3.0 cold start was measured at ~60 s (14 s scheduling, 40 s pulling a 735 MB image, 11 s of Python imports). 3.1 removes PyTorch, transformers, scikit-learn and SciPy from the image and replaces the 470 MB fp32 weights with the 118 MB int8 export; CI reports the new image size on every run.
+Cold starts measured from Container Apps system logs: 3.0 took ~60 s (14 s scheduling, 40 s pulling a 735 MB image, 11 s of Python imports); 3.1 takes ~25 s (9 s scheduling, 12 s pulling a 220 MB image, 4 s of imports, model preloaded in 0.9 s). The image lost PyTorch, transformers, scikit-learn and SciPy, and the 470 MB fp32 weights became the 118 MB int8 export.
 
 ---
 
@@ -362,9 +365,12 @@ az containerapp ingress traffic set \
 | 副本规格 | 1 vCPU / 2 GiB + Datadog 边车 0.5 vCPU / 1 GiB | **0.5 vCPU / 1 GiB**（启用可选 Datadog 边车时另加 0.5 vCPU / 1 GiB） |
 | 免费额度可覆盖的副本运行时长 | 约 33 小时/月 | **约 100 小时/月**（带边车约 50 小时） |
 | `/ready` 接口 | 每次调用都执行一次向量推理 | 后台一次性加载后仅检查标志位 |
-| 查询向量化延迟（单线程） | — | Celeron J4125（无 AVX2）p50 77 ms，Apple Silicon 3 ms |
+| 镜像大小（压缩后） | 736 MB | **220 MB** |
+| 冷启动（从 0 扩容到首个 `/health`） | 约 60 秒 | **约 25 秒** |
+| 预热后内存（CI 冒烟测试，0.5 vCPU / 1 GiB） | — | 482 MiB（开启追踪 538 MiB） |
+| 查询向量化延迟（单线程） | — | 线上约 6 ms，Celeron J4125（无 AVX2）p50 77 ms |
 
-3.0 的冷启动实测约 60 秒（调度 14 秒、拉取 735 MB 镜像 40 秒、Python 导入 11 秒）。3.1 从镜像中移除了 PyTorch、transformers、scikit-learn 与 SciPy，并以 118 MB 的 int8 权重替换 470 MB 的 fp32 权重；CI 每次运行都会报告新镜像大小。
+冷启动数据来自 Container Apps 系统日志：3.0 约 60 秒（调度 14 秒、拉取 735 MB 镜像 40 秒、Python 导入 11 秒）；3.1 约 25 秒（调度 9 秒、拉取 220 MB 镜像 12 秒、导入 4 秒、模型预加载 0.9 秒）。镜像中移除了 PyTorch、transformers、scikit-learn 与 SciPy，470 MB 的 fp32 权重换成了 118 MB 的 int8 导出。
 
 ---
 
@@ -619,9 +625,12 @@ az containerapp ingress traffic set \
 | レプリカ構成 | 1 vCPU / 2 GiB + Datadog サイドカー 0.5 vCPU / 1 GiB | **0.5 vCPU / 1 GiB**（任意の Datadog サイドカー使用時は +0.5 vCPU / 1 GiB） |
 | 無料枠でカバーできるレプリカ稼働時間 | 約 33 時間/月 | **約 100 時間/月**（サイドカー込みで約 50 時間） |
 | `/ready` エンドポイント | 呼び出しごとに Embedding 推論を実行 | バックグラウンドでの初回ロード後はフラグ確認のみ |
-| クエリ Embedding レイテンシ（1 スレッド） | — | Celeron J4125（AVX2 なし）で p50 77 ms、Apple silicon で 3 ms |
+| イメージサイズ（圧縮後） | 736 MB | **220 MB** |
+| コールドスタート（0 からのスケールで最初の `/health` まで） | 約 60 秒 | **約 25 秒** |
+| ウォームアップ後のメモリ（CI スモークテスト、0.5 vCPU / 1 GiB） | — | 482 MiB（トレース有効時 538 MiB） |
+| クエリ Embedding レイテンシ（1 スレッド） | — | 本番で約 6 ms、Celeron J4125（AVX2 なし）で p50 77 ms |
 
-3.0 のコールドスタートは約 60 秒（スケジューリング 14 秒、735 MB イメージの取得 40 秒、Python インポート 11 秒）でした。3.1 ではイメージから PyTorch・transformers・scikit-learn・SciPy を除去し、470 MB の fp32 重みを 118 MB の int8 エクスポートに置き換えました。新しいイメージサイズは CI が毎回レポートします。
+コールドスタートは Container Apps のシステムログから計測しました。3.0 は約 60 秒（スケジューリング 14 秒、735 MB イメージの取得 40 秒、Python インポート 11 秒）、3.1 は約 25 秒（スケジューリング 9 秒、220 MB イメージの取得 12 秒、インポート 4 秒、モデル先読み 0.9 秒）です。イメージから PyTorch・transformers・scikit-learn・SciPy を除去し、470 MB の fp32 重みを 118 MB の int8 エクスポートに置き換えました。
 
 ---
 
