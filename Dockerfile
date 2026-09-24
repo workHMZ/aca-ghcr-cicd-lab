@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-ARG PYTHON_IMAGE=python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
+ARG PYTHON_IMAGE=python:3.12.14-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
 
-FROM ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
+FROM ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc AS uv
 FROM ${PYTHON_IMAGE} AS builder
 
 COPY --from=uv /uv /uvx /bin/
@@ -13,33 +13,36 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-# Install only locked production dependencies. Application source is copied in
-# the runtime stage, so dependency layers remain cacheable across code changes.
+# Install only locked production dependencies (ONNX Runtime, no PyTorch).
+# Application source is copied in the runtime stage, so dependency layers
+# remain cacheable across code changes.
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
-# Pin the embedding model to an immutable Hugging Face revision and store it in
-# the image. Runtime network access to Hugging Face is intentionally disabled.
-ARG EMBEDDING_MODEL=intfloat/multilingual-e5-small
-ARG EMBEDDING_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
+# Fetch the pinned ONNX model with the standard library only. The manifest
+# pins the Hugging Face revision and the SHA-256 of every file, so this layer
+# is invalidated only when the manifest changes.
+FROM ${PYTHON_IMAGE} AS model
+
+ARG EMBEDDING_VARIANT=onnx-qint8
 ARG EMBEDDING_MODEL_PATH=/opt/models/multilingual-e5-small
-RUN --mount=type=cache,target=/root/.cache/huggingface \
-    EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
-    EMBEDDING_MODEL_REVISION="${EMBEDDING_MODEL_REVISION}" \
-    EMBEDDING_MODEL_PATH="${EMBEDDING_MODEL_PATH}" \
-    /opt/venv/bin/python -c \
-    'import os; from sentence_transformers import SentenceTransformer; model = SentenceTransformer(os.environ["EMBEDDING_MODEL"], revision=os.environ["EMBEDDING_MODEL_REVISION"]); model.save(os.environ["EMBEDDING_MODEL_PATH"])'
+
+WORKDIR /build
+COPY app/__init__.py app/model_manifest.py ./app/
+RUN python -m app.model_manifest --download "${EMBEDDING_MODEL_PATH}" --variant "${EMBEDDING_VARIANT}"
 
 FROM ${PYTHON_IMAGE} AS runtime
 
 ARG APP_VERSION=unknown
 ARG BUILD_SHA=unknown
 ARG IMAGE_TAG=unknown
-ARG EMBEDDING_MODEL=intfloat/multilingual-e5-small
-ARG EMBEDDING_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3
+ARG EMBEDDING_VARIANT=onnx-qint8
 ARG EMBEDDING_MODEL_PATH=/opt/models/multilingual-e5-small
 
+# Datadog tracing is opt-in: with DD_TRACE_ENABLED=true (set by CD when the
+# Agent sidecar is deployed) uvicorn runs under ddtrace-run with ddtrace's
+# normal defaults; otherwise the tracer is never started.
 ENV PATH=/opt/venv/bin:$PATH \
     HOME=/home/app \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -48,11 +51,10 @@ ENV PATH=/opt/venv/bin:$PATH \
     BUILD_SHA=${BUILD_SHA} \
     IMAGE_TAG=${IMAGE_TAG} \
     DD_VERSION=${APP_VERSION} \
-    EMBEDDING_MODEL=${EMBEDDING_MODEL} \
-    EMBEDDING_MODEL_REVISION=${EMBEDDING_MODEL_REVISION} \
+    DD_TRACE_ENABLED=false \
+    EMBEDDING_VARIANT=${EMBEDDING_VARIANT} \
     EMBEDDING_MODEL_PATH=${EMBEDDING_MODEL_PATH} \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
+    EMBEDDING_OFFLINE=1
 
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid 10001 --no-log-init --create-home --home-dir /home/app app
@@ -60,14 +62,14 @@ RUN groupadd --gid 10001 app \
 WORKDIR /app
 
 COPY --from=builder --chown=10001:10001 /opt/venv /opt/venv
-COPY --from=builder --chown=10001:10001 /opt/models /opt/models
+COPY --from=model --chown=10001:10001 /opt/models /opt/models
 COPY --chown=10001:10001 app/ ./app/
 
 USER 10001:10001
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
 
-CMD ["ddtrace-run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "app"]

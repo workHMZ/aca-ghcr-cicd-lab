@@ -23,9 +23,9 @@ variable "container_app_name" {
 }
 
 variable "container_cpu" {
-  description = "CPU cores allocated to the application container"
+  description = "CPU cores allocated to the application container (0.5 vCPU triples the free-grant runtime vs 1.5 vCPU with the old sidecar)"
   type        = number
-  default     = 1
+  default     = 0.5
 
   validation {
     condition     = var.container_cpu > 0
@@ -34,9 +34,9 @@ variable "container_cpu" {
 }
 
 variable "container_memory" {
-  description = "Memory allocated to the application container"
+  description = "Memory allocated to the application container (the ONNX int8 service needs ~0.6 GiB)"
   type        = string
-  default     = "2Gi"
+  default     = "1Gi"
 
   validation {
     condition     = can(regex("^[1-9][0-9]*(Mi|Gi)$", var.container_memory))
@@ -51,9 +51,9 @@ variable "azure_search_endpoint" {
 }
 
 variable "azure_search_index_name" {
-  description = "Azure AI Search index for the 3.0 embedding space"
+  description = "Azure AI Search index for the v4 embedding space"
   type        = string
-  default     = "ragdocs-v3"
+  default     = "ragdocs-v4"
 }
 
 variable "openai_model" {
@@ -85,6 +85,17 @@ variable "embedding_model_revision" {
   default     = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
 }
 
+variable "embedding_variant" {
+  description = "Embedding runtime variant baked into the image and recorded on every indexed chunk"
+  type        = string
+  default     = "onnx-qint8"
+
+  validation {
+    condition     = contains(["onnx-qint8", "onnx-fp32"], var.embedding_variant)
+    error_message = "embedding_variant must be onnx-qint8 or onnx-fp32."
+  }
+}
+
 variable "environment_name" {
   description = "Deployment environment name"
   type        = string
@@ -110,15 +121,15 @@ variable "datadog_service" {
 }
 
 variable "enable_datadog_sidecar" {
-  description = "Run the Datadog Agent as a sidecar in each Container Apps replica"
+  description = "Run the Datadog Agent sidecar and enable APM tracing (adds 0.5 vCPU / 1 GiB per replica, a third of the free grant)"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "datadog_sidecar_image" {
   description = "Immutable Datadog Agent image"
   type        = string
-  default     = "docker.io/datadog/agent@sha256:c778490306882f4ed64ff61f5fe8d841ed9061ab52c19edf2afe0f3ba84ab650"
+  default     = "docker.io/datadog/agent@sha256:29baa94e0a1abcadf43b2b2a002ad4406b3c05a46b8cae29ae1803a663795b59"
 }
 
 variable "datadog_sidecar_cpu" {
@@ -155,13 +166,47 @@ variable "min_replicas" {
 }
 
 variable "max_replicas" {
-  description = "Maximum number of Container Apps replicas"
+  description = "Maximum number of Container Apps replicas (the in-process query budget is per replica)"
   type        = number
   default     = 1
 
   validation {
     condition     = var.max_replicas >= 1
     error_message = "max_replicas must be at least one."
+  }
+}
+
+variable "cooldown_period_seconds" {
+  description = "Idle seconds before scaling back to zero; every cold visit bills at least this long"
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.cooldown_period_seconds >= 60
+    error_message = "cooldown_period_seconds must be at least 60."
+  }
+}
+
+variable "max_inactive_revisions" {
+  description = "Inactive revisions kept as rollback targets"
+  type        = number
+  default     = 5
+}
+
+variable "log_analytics_workspace_name" {
+  description = "Existing workspace name to adopt (az containerapp env create generates workspace-<rg><suffix>); null creates log-<env>"
+  type        = string
+  default     = null
+}
+
+variable "log_analytics_daily_quota_gb" {
+  description = "Daily Log Analytics ingestion cap; 0.16 GB/day stays inside the 5 GB/month free allowance"
+  type        = number
+  default     = 0.16
+
+  validation {
+    condition     = var.log_analytics_daily_quota_gb > 0
+    error_message = "log_analytics_daily_quota_gb must be greater than zero."
   }
 }
 

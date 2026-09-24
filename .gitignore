@@ -5,6 +5,9 @@
 # Data directory (local use only)
 data/
 
+# Private working notes (never published)
+private-notes/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

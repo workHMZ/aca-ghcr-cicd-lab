@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.model_manifest import DEFAULT_VARIANT, EmbeddingVariant
+
 # Load a developer .env before BaseSettings reads the process environment.
 # Existing process/container variables remain authoritative.
 load_dotenv(override=False)
@@ -24,7 +26,7 @@ class Settings(BaseSettings):
         str_strip_whitespace=True,
     )
 
-    app_version: str = "3.0.0"
+    app_version: str = "3.1.0"
     build_sha: str = "unknown"
     image_tag: str = "unknown"
     env_name: str = Field(default="stg", validation_alias=AliasChoices("ENV_NAME", "DD_ENV"))
@@ -42,11 +44,14 @@ class Settings(BaseSettings):
     openai_max_retries: int = Field(default=2, ge=0, le=5)
 
     azure_search_endpoint: str | None = None
-    azure_search_index_name: str = "ragdocs-v3"
+    azure_search_index_name: str = "ragdocs-v4"
     azure_search_api_key: str | None = None
     search_candidate_count: int = Field(default=50, ge=10, le=1000)
     search_semantic_enabled: bool = True
     search_semantic_configuration: str = "rag-semantic"
+    # Semantic reranker scores range 0-4. Contexts below the floor are dropped
+    # before generation; if none survive, the LLM call is skipped entirely.
+    search_min_reranker_score: float = Field(default=1.5, ge=0.0, le=4.0)
     search_top_k_default: int = Field(default=5, ge=1, le=10)
     search_top_k_max: int = Field(default=10, ge=1, le=50)
     max_question_chars: int = Field(default=4_000, ge=1, le=100_000)
@@ -58,6 +63,7 @@ class Settings(BaseSettings):
     embedding_model_revision: Literal["614241f622f53c4eeff9890bdc4f31cfecc418b3"] = (
         "614241f622f53c4eeff9890bdc4f31cfecc418b3"
     )
+    embedding_variant: EmbeddingVariant = DEFAULT_VARIANT
     embedding_model_path: str | None = None
     embedding_offline: bool = Field(
         default=False,
@@ -68,12 +74,21 @@ class Settings(BaseSettings):
         ),
     )
     embedding_batch_size: int = Field(default=16, ge=1, le=256)
-    embedding_query_max_tokens: int = Field(
+    embedding_threads: int = Field(default=1, ge=1, le=16)
+    embedding_preload: bool = True
+    embedding_max_tokens: int = Field(
         default=512,
         ge=8,
         le=512,
-        validation_alias=AliasChoices("EMBEDDING_QUERY_MAX_TOKENS", "EMBEDDING_MAX_TOKENS"),
+        validation_alias=AliasChoices("EMBEDDING_MAX_TOKENS", "EMBEDDING_QUERY_MAX_TOKENS"),
     )
+
+    # Public-endpoint cost guardrails. Both are per replica; max_replicas=1
+    # makes them effectively global. 0 disables either one.
+    answer_cache_ttl_seconds: int = Field(default=3600, ge=0, le=86_400)
+    answer_cache_max_entries: int = Field(default=256, ge=1, le=10_000)
+    query_rate_limit_per_minute: int = Field(default=20, ge=0, le=10_000)
+    query_daily_limit: int = Field(default=500, ge=0, le=1_000_000)
 
     @model_validator(mode="after")
     def validate_cross_field_bounds(self) -> "Settings":

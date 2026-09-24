@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
-"""Chunk local documents and idempotently ingest them into the v3 index."""
+"""Chunk local documents and idempotently ingest them into the v4 index."""
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
-import inspect
 import json
 import os
 import sys
@@ -28,29 +27,36 @@ from pypdf import PdfReader
 from app import embed as embedding
 from app.chunking import (
     DEFAULT_CHUNK_TOKENS,
+    DEFAULT_MIN_CHUNK_TOKENS,
     DEFAULT_OVERLAP_TOKENS,
-    chunk_text,
+    chunk_document,
+    detect_toc_pages,
 )
+from scripts.create_index import LANGUAGE_FIELDS
 
-DEFAULT_INDEX_NAME = "ragdocs-v3"
+DEFAULT_INDEX_NAME = "ragdocs-v4"
+ID_NAMESPACE = "v4"
 SUPPORTED_SUFFIXES = {".pdf", ".md", ".txt"}
 
 
 @dataclass(frozen=True, slots=True)
 class ChunkRecord:
     source: str
-    page_number: int
     chunk_index: int
     content: str
+    title: str | None
+    page_start: int
+    page_end: int
     token_count: int
     created_at: str
+    embedding_text: str
 
 
 @dataclass(slots=True)
 class IngestionStats:
     files: int = 0
     pages: int = 0
-    empty_pages: int = 0
+    toc_pages: int = 0
     chunks: int = 0
     embedded: int = 0
     uploaded: int = 0
@@ -67,65 +73,24 @@ def _required_env(name: str) -> str:
 
 def _default_index_name() -> str:
     # Never ingest into a legacy AZURE_SEARCH_INDEX_NAME by accident.
-    return os.getenv("AZURE_SEARCH_INDEX_NAME_V3", DEFAULT_INDEX_NAME).strip() or DEFAULT_INDEX_NAME
+    return os.getenv("AZURE_SEARCH_INDEX_NAME_V4", DEFAULT_INDEX_NAME).strip() or DEFAULT_INDEX_NAME
 
 
-def _call_optional(name: str) -> Any | None:
-    function = getattr(embedding, name, None)
-    return function() if callable(function) else None
-
-
-def _get_model_object() -> Any:
-    getter = getattr(embedding, "_get_model", None)
-    if not callable(getter):
-        raise RuntimeError("app.embed must expose get_tokenizer()")
-    return getter()
-
-
-def _embedding_metadata() -> tuple[str, str, Any, int]:
-    model_name = _call_optional("get_model_name")
-    model_revision = _call_optional("get_model_revision")
-    tokenizer = _call_optional("get_tokenizer")
-
-    model_object: Any | None = None
-    if tokenizer is None or not model_name:
-        model_object = _get_model_object()
-    if tokenizer is None:
-        tokenizer = getattr(model_object, "tokenizer", None)
-    if tokenizer is None:
-        raise RuntimeError("The embedding model does not expose a tokenizer")
-
-    if not model_name:
-        model_name = (
-            os.getenv("EMBEDDING_MODEL")
-            or os.getenv("EMBEDDING_MODEL_NAME")
-            or getattr(tokenizer, "name_or_path", None)
-            or "unknown"
-        )
-    if not model_revision:
-        model_revision = os.getenv("EMBEDDING_MODEL_REVISION") or "unversioned"
-
+def _embedding_metadata() -> tuple[str, str, str, Any, int]:
     dimension = int(embedding.get_dimension())
     if dimension <= 0:
         raise RuntimeError("Embedding dimension must be greater than zero")
-    return str(model_name), str(model_revision), tokenizer, dimension
+    return (
+        embedding.get_model_name(),
+        embedding.get_model_revision(),
+        embedding.get_embedding_variant(),
+        embedding.get_tokenizer(),
+        dimension,
+    )
 
 
-def _embed_passages(texts: Sequence[str], model_name: str) -> list[list[float]]:
-    embed_batch = embedding.embed_batch
-    parameters = inspect.signature(embed_batch).parameters
-
-    if "input_type" in parameters:
-        raw_vectors = embed_batch(list(texts), input_type="passage")
-    else:
-        embedding_inputs = list(texts)
-        if "e5" in model_name.lower():
-            embedding_inputs = [f"passage: {text}" for text in embedding_inputs]
-        raw_vectors = embed_batch(embedding_inputs)
-
-    if hasattr(raw_vectors, "tolist"):
-        raw_vectors = raw_vectors.tolist()
-    return [[float(value) for value in vector] for vector in raw_vectors]
+def _embed_passages(texts: Sequence[str]) -> list[list[float]]:
+    return embedding.embed_passages(list(texts))
 
 
 def _batched[T](values: Iterable[T], batch_size: int) -> Iterator[list[T]]:
@@ -154,68 +119,79 @@ def _source_timestamp(path: Path) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def _stable_document_id(source: str, page_number: int, chunk_index: int) -> str:
-    identity = f"v3\0{source}\0{page_number}\0{chunk_index}".encode()
+def _stable_document_id(source: str, chunk_index: int) -> str:
+    identity = f"{ID_NAMESPACE}\0{source}\0{chunk_index}".encode()
     return hashlib.sha256(identity).hexdigest()
 
 
 def _source_document_prefix(source: str) -> str:
     """Stable source namespace used to remove stale chunks after a re-ingest."""
 
-    return hashlib.sha256(f"v3\0{source}\0".encode()).hexdigest()[:16]
+    return hashlib.sha256(f"{ID_NAMESPACE}\0{source}\0".encode()).hexdigest()[:16]
 
 
 def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def select_source_files(data_dir: Path, patterns: Sequence[str] | None = None) -> list[Path]:
+    """Return supported regular files under ``data_dir`` matching any glob."""
+
+    selected: list[Path] = []
+    for path in sorted(data_dir.rglob("*")):
+        if not path.is_file() or path.is_symlink() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
+            continue
+        relative = path.relative_to(data_dir).as_posix()
+        if patterns and not any(fnmatch.fnmatch(relative, pattern) for pattern in patterns):
+            continue
+        selected.append(path)
+    return selected
+
+
 def _iter_records(
     data_dir: Path,
     tokenizer: Any,
     *,
+    patterns: Sequence[str] | None,
     chunk_tokens: int,
+    min_chunk_tokens: int,
     overlap_tokens: int,
     stats: IngestionStats,
 ) -> Iterator[ChunkRecord]:
-    paths = sorted(
-        path
-        for path in data_dir.rglob("*")
-        if path.is_file() and not path.is_symlink() and path.suffix.lower() in SUPPORTED_SUFFIXES
-    )
-    print(f"Found {len(paths)} supported files in {data_dir}")
+    paths = select_source_files(data_dir, patterns)
+    print(f"Selected {len(paths)} files in {data_dir}:")
+    for path in paths:
+        print(f"  - {path.relative_to(data_dir).as_posix()}")
 
     for path in paths:
         stats.files += 1
         source = path.relative_to(data_dir).as_posix()
         created_at = _source_timestamp(path)
-        print(f"Chunking {source}...")
-
-        for page_number, page_text in _iter_source_pages(path):
-            stats.pages += 1
-            if not page_text.strip():
-                stats.empty_pages += 1
-                continue
-
-            page_chunks = chunk_text(
-                page_text,
-                tokenizer,
-                max_tokens=chunk_tokens,
-                overlap_tokens=overlap_tokens,
+        pages = list(_iter_source_pages(path))
+        stats.pages += len(pages)
+        chunks = chunk_document(
+            pages,
+            tokenizer,
+            max_tokens=chunk_tokens,
+            min_tokens=min(min_chunk_tokens, chunk_tokens),
+            overlap_tokens=overlap_tokens,
+        )
+        toc_pages = detect_toc_pages(pages)
+        stats.toc_pages += len(toc_pages)
+        print(f"Chunked {source}: {len(pages)} pages ({len(toc_pages)} TOC skipped) -> {len(chunks)} chunks")
+        for chunk_index, chunk in enumerate(chunks):
+            stats.chunks += 1
+            yield ChunkRecord(
+                source=source,
+                chunk_index=chunk_index,
+                content=chunk.text,
+                title=chunk.title,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                token_count=chunk.token_count,
+                created_at=created_at,
+                embedding_text=chunk.embedding_text(),
             )
-            if not page_chunks:
-                stats.empty_pages += 1
-                continue
-
-            for chunk_index, chunk in enumerate(page_chunks):
-                stats.chunks += 1
-                yield ChunkRecord(
-                    source=source,
-                    page_number=page_number,
-                    chunk_index=chunk_index,
-                    content=chunk.text,
-                    token_count=chunk.token_count,
-                    created_at=created_at,
-                )
 
 
 def _document_from_record(
@@ -224,18 +200,23 @@ def _document_from_record(
     *,
     model_name: str,
     model_revision: str,
+    model_variant: str,
 ) -> dict[str, Any]:
     return {
-        "id": _stable_document_id(record.source, record.page_number, record.chunk_index),
+        "id": _stable_document_id(record.source, record.chunk_index),
         "content": record.content,
+        **dict.fromkeys(LANGUAGE_FIELDS, record.content),
+        "title": record.title,
         "contentVector": list(vector),
         "source": record.source,
         "sourceId": _source_document_prefix(record.source),
-        "pageNumber": record.page_number,
+        "pageNumber": record.page_start,
+        "pageEnd": record.page_end,
         "chunkIndex": record.chunk_index,
         "contentHash": _content_hash(record.content),
         "embeddingModel": model_name,
         "embeddingRevision": model_revision,
+        "embeddingVariant": model_variant,
         "createdAt": record.created_at,
     }
 
@@ -303,12 +284,15 @@ def ingest(
     data_dir: Path,
     model_name: str,
     model_revision: str,
+    model_variant: str,
     tokenizer: Any,
     dimension: int,
     chunk_tokens: int,
+    min_chunk_tokens: int,
     overlap_tokens: int,
     embedding_batch_size: int,
     upload_batch_size: int,
+    patterns: Sequence[str] | None = None,
 ) -> IngestionStats:
     stats = IngestionStats()
     started_at = time.monotonic()
@@ -318,16 +302,20 @@ def ingest(
     records = _iter_records(
         data_dir,
         tokenizer,
+        patterns=patterns,
         chunk_tokens=chunk_tokens,
+        min_chunk_tokens=min_chunk_tokens,
         overlap_tokens=overlap_tokens,
         stats=stats,
     )
     for record_batch in _batched(records, embedding_batch_size):
         for record in record_batch:
             active_ids_by_source.setdefault(record.source, set()).add(
-                _stable_document_id(record.source, record.page_number, record.chunk_index)
+                _stable_document_id(record.source, record.chunk_index)
             )
-        vectors = _embed_passages([record.content for record in record_batch], model_name)
+        # The heading path is embedded with the chunk so continuation chunks
+        # of a long answer still match questions about their section.
+        vectors = _embed_passages([record.embedding_text for record in record_batch])
         if len(vectors) != len(record_batch):
             stats.failed += len(record_batch)
             raise RuntimeError(
@@ -337,7 +325,7 @@ def ingest(
             if len(vector) != dimension:
                 stats.failed += 1
                 raise RuntimeError(
-                    f"Embedding dimension mismatch for {record.source} page {record.page_number}: "
+                    f"Embedding dimension mismatch for {record.source} chunk {record.chunk_index}: "
                     f"expected {dimension}, got {len(vector)}"
                 )
             pending_uploads.append(
@@ -346,6 +334,7 @@ def ingest(
                     vector,
                     model_name=model_name,
                     model_revision=model_revision,
+                    model_variant=model_variant,
                 )
             )
         stats.embedded += len(vectors)
@@ -360,7 +349,7 @@ def ingest(
         _upload_batch(client, pending_uploads, stats)
 
     # Synchronize each source namespace so shortened/changed files cannot leave
-    # stale tail chunks in an existing v3 index.
+    # stale tail chunks in an existing index.
     for source, active_ids in active_ids_by_source.items():
         _delete_stale_source_chunks(client, source=source, active_ids=active_ids, stats=stats)
 
@@ -386,14 +375,30 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data")
     parser.add_argument(
+        "--glob",
+        dest="patterns",
+        action="append",
+        help=(
+            "Only ingest files whose path relative to --data-dir matches this glob; "
+            "repeatable (default: every .pdf/.md/.txt file). The index is served by a "
+            "public API, so never point it at private notes."
+        ),
+    )
+    parser.add_argument(
         "--index-name",
         default=None,
-        help="Target index (default: AZURE_SEARCH_INDEX_NAME_V3 or ragdocs-v3)",
+        help="Target index (default: AZURE_SEARCH_INDEX_NAME_V4 or ragdocs-v4)",
     )
     parser.add_argument("--chunk-tokens", type=_positive_int, default=DEFAULT_CHUNK_TOKENS)
+    parser.add_argument("--min-chunk-tokens", type=_positive_int, default=DEFAULT_MIN_CHUNK_TOKENS)
     parser.add_argument("--overlap-tokens", type=_non_negative_int, default=DEFAULT_OVERLAP_TOKENS)
     parser.add_argument("--embedding-batch-size", type=_positive_int, default=32)
     parser.add_argument("--upload-batch-size", type=_positive_int, default=100)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Chunk and report statistics without embedding or uploading",
+    )
     return parser.parse_args()
 
 
@@ -410,20 +415,48 @@ def main() -> int:
         raise RuntimeError(f"Data directory does not exist: {data_dir}")
 
     index_name = (args.index_name or _default_index_name()).strip()
-    model_name, model_revision, tokenizer, dimension = _embedding_metadata()
+    model_name, model_revision, model_variant, tokenizer, dimension = _embedding_metadata()
     print(
         json.dumps(
             {
                 "index": index_name,
                 "model": model_name,
                 "revision": model_revision,
+                "variant": model_variant,
                 "dimension": dimension,
                 "chunk_tokens": args.chunk_tokens,
+                "min_chunk_tokens": args.min_chunk_tokens,
                 "overlap_tokens": args.overlap_tokens,
             },
             ensure_ascii=False,
         )
     )
+
+    if args.dry_run:
+        stats = IngestionStats()
+        records = list(
+            _iter_records(
+                data_dir,
+                tokenizer,
+                patterns=args.patterns,
+                chunk_tokens=args.chunk_tokens,
+                min_chunk_tokens=args.min_chunk_tokens,
+                overlap_tokens=args.overlap_tokens,
+                stats=stats,
+            )
+        )
+        tokens = [record.token_count for record in records]
+        print(
+            json.dumps(
+                {
+                    "status": "dry-run",
+                    **asdict(stats),
+                    "avg_chunk_tokens": round(sum(tokens) / len(tokens), 1) if tokens else 0,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
 
     client = SearchClient(
         endpoint=_required_env("AZURE_SEARCH_ENDPOINT"),
@@ -435,12 +468,15 @@ def main() -> int:
         data_dir=data_dir,
         model_name=model_name,
         model_revision=model_revision,
+        model_variant=model_variant,
         tokenizer=tokenizer,
         dimension=dimension,
         chunk_tokens=args.chunk_tokens,
+        min_chunk_tokens=args.min_chunk_tokens,
         overlap_tokens=args.overlap_tokens,
         embedding_batch_size=args.embedding_batch_size,
         upload_batch_size=args.upload_batch_size,
+        patterns=args.patterns,
     )
     print(json.dumps({"status": "complete", **asdict(stats)}, ensure_ascii=False))
     return 0
