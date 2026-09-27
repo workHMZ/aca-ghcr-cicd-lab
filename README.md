@@ -12,9 +12,11 @@ Cost-optimized serverless multilingual Retrieval-Augmented Generation (RAG) serv
 | 3.2.0 snapshot | Status |
 |---|---|
 | Release | [v3.2.0](https://github.com/workHMZ/aca-ghcr-cicd-lab/releases/tag/v3.2.0) · Python 3.14.7 |
+| Live deployment | [API health](https://serverless-rag-api.wonderfulforest-72b21477.japaneast.azurecontainerapps.io/health) · `dcaebb4` · revision `0000052`, 100% traffic |
 | Verification | **123 tests passed · 91.74% coverage** (2026-09-27) |
 | Runtime target | Application **0.5 vCPU / 1 GiB**; **1 vCPU / 2 GiB** including Datadog sidecar |
-| Retrieval / latency benchmarks | **96% / 98% Page Hit Rate@1 / @3 · MRR@10 0.966667 · cold start median 26.410 s** (2026-09-26) |
+| Retrieval benchmark | **96% / 98% Page Hit Rate@1 / @3 · MRR@10 0.966667** (2026-09-26) |
+| Cold start, released image | **21.255 s median** · 3 runs, 20.263–23.191 s (2026-09-27) |
 
 ---
 
@@ -90,11 +92,11 @@ Production RAG usually brings recurring embedding API costs, uneven retrieval ac
 | Datadog | APM + DORA | APM + DORA + workflow, retrieval and LLM token traces |
 | Page Hit Rate@1 / @3 | 84% / 94% | **96% / 98%** |
 | MRR@10 | 0.900 | **0.966667** |
-| Cold start | ~60 s (historical) | **26.410 s median** (3 runs: 23.895–28.107 s) |
+| Cold start | ~60 s (historical) | **21.255 s median** (3 runs: 20.263–23.191 s) |
 
 Measured 2026-09-26: 50 labelled questions (zh 25 / ja 12 / en 13), the 521-chunk Java corpus in `ragdocs-v4`, and the current semantic retrieval path. Page Hit Rate measures whether a relevant page appears, not answer correctness. In the same run, BM25 / vector / hybrid / semantic Hit@1 were **80% / 82% / 84% / 96%**.
 
-Cold start: Japan East ACA, Python 3.14.7, application 0.5 vCPU / 1 GiB plus the same-sized Datadog sidecar. Each request started after replica count reached zero; timed to the first HTTP 200 from `/health`. `/ready` passed within 0.046 s afterward. The test used a 30 s scale-down cooldown; image caches were not cleared, and the sidecar used an invalid placeholder credential. The historical 3.0 value came from system logs, so this is not a controlled A/B speedup claim or a Datadog delivery test.
+Cold start measured 2026-09-27 with the released image: Japan East ACA, Python 3.14.7, application 0.5 vCPU / 1 GiB plus the same-sized Datadog sidecar. Each request started after replica count reached zero; timed to the first HTTP 200 from `/health`. `/ready` passed within 0.050 s afterward. The test used a 30 s scale-down cooldown; image caches were not cleared, and the sidecar used an invalid placeholder credential. The historical 3.0 value came from system logs, so this is not a controlled A/B speedup claim or a Datadog delivery test.
 
 New in 3.2: fail closed on semantic failures, require a read-only Search key, authenticate cache bypass, validate citations, make ingestion cleanup explicit, and configure Azure OIDC deployment.
 
@@ -142,7 +144,7 @@ flowchart LR
     Agent -.-> DD["Datadog<br/>APM + LLM Observability"]
 ```
 
-**Datadog: APM + LLM Observability.** `rag.query` groups the stages below and sends metadata through the existing Agent sidecar at `127.0.0.1:8126`. LLM spans are covered by SDK export tests; confirm delivery in Datadog after deployment.
+**Datadog: APM + LLM Observability.** `rag.query` groups the stages below and sends metadata through the existing Agent sidecar at `127.0.0.1:8126`. Live delivery was verified on 2026-09-27: all four spans, stage latency and LLM input/output tokens appeared under `serverless-rag-api`, version `3.2.0`, without question or answer text. The optional DORA deployment event was skipped because GitHub `DD_API_KEY` is not configured.
 
 | Trace | Recorded data |
 |---|---|
@@ -349,11 +351,11 @@ az containerapp ingress traffic set \
 | Datadog | APM + DORA | 增加问答链路、检索与 LLM token 追踪 |
 | Page Hit Rate@1 / @3 | 84% / 94% | **96% / 98%** |
 | MRR@10 | 0.900 | **0.966667** |
-| 冷启动 | 约 60 秒（历史记录） | **中位数 26.410 秒**（3 轮：23.895–28.107 秒） |
+| 冷启动 | 约 60 秒（历史记录） | **中位数 21.255 秒**（3 轮：20.263–23.191 秒） |
 
 实测日期 2026-09-26：50 道标注题（中文 25 / 日文 12 / 英文 13），`ragdocs-v4` 中的 Java 资料共 521 个片段，使用当前语义检索路径。Page Hit Rate 表示是否命中相关页面，不是答案准确率。同轮 BM25 / 向量 / 混合 / 语义重排的 Hit@1 分别为 **80% / 82% / 84% / 96%**。
 
-冷启动条件：日本东部 ACA，Python 3.14.7，应用 0.5 vCPU / 1 GiB，加同等资源的 Datadog 边车。每轮先确认副本数为零，再从发起请求计时至 `/health` 首次返回 HTTP 200；随后 0.046 秒内 `/ready` 均通过。测试缩容冷却期为 30 秒，未清空镜像缓存，边车使用无效占位凭据。3.0 的历史值来自系统日志，因此不能据此声称严格 A/B 加速比例，也不代表 Datadog 上报已经验证。
+冷启动于 2026-09-27 使用正式发布镜像实测：日本东部 ACA，Python 3.14.7，应用 0.5 vCPU / 1 GiB，加同等资源的 Datadog 边车。每轮先确认副本数为零，再从发起请求计时至 `/health` 首次返回 HTTP 200；随后 0.050 秒内 `/ready` 均通过。测试缩容冷却期为 30 秒，未清空镜像缓存，边车使用无效占位凭据。3.0 的历史值来自系统日志，因此不能据此声称严格 A/B 加速比例，也不代表 Datadog 上报已经验证。
 
 3.2 新增：语义失败时停止生成、Search 只读密钥、缓存绕过鉴权、引用检查、显式摄取清理，以及 Azure OIDC 部署配置。
 
@@ -401,7 +403,7 @@ flowchart LR
     Agent -.-> DD["Datadog<br/>APM + LLM Observability"]
 ```
 
-**Datadog：APM + LLM 监控。** `rag.query` 串起以下步骤，通过现有 Agent 边车的 `127.0.0.1:8126` 上报运行指标。LLM 埋点通过 SDK 导出测试；部署后可在 Datadog 核对接收情况。
+**Datadog：APM + LLM 监控。** `rag.query` 串起以下步骤，通过现有 Agent 边车的 `127.0.0.1:8126` 上报运行指标。2026-09-27 已在后台确认 `serverless-rag-api`、版本 `3.2.0` 的四段调用链、分段耗时和模型输入/输出 token，未采集问题或答案正文。GitHub 未配置 `DD_API_KEY`，本次可选的 DORA 发布事件跳过。
 
 | 追踪记录 | 展示数据 |
 |---|---|
@@ -608,11 +610,11 @@ az containerapp ingress traffic set \
 | Datadog | APM + DORA | ワークフロー・検索・LLM token のトレースを追加 |
 | Page Hit Rate@1 / @3 | 84% / 94% | **96% / 98%** |
 | MRR@10 | 0.900 | **0.966667** |
-| コールドスタート | 約 60 秒（過去の記録） | **中央値 26.410 秒**（3 回：23.895–28.107 秒） |
+| コールドスタート | 約 60 秒（過去の記録） | **中央値 21.255 秒**（3 回：20.263–23.191 秒） |
 
 測定日 2026-09-26：ラベル付き 50 問（中文 25 / 日本語 12 / 英語 13）、`ragdocs-v4` の Java 資料 521 チャンク、現在のセマンティック検索を使用。Page Hit Rate は関連ページのヒット率であり、回答の正答率ではありません。同じ測定で BM25 / ベクトル / ハイブリッド / セマンティック再順位付けの Hit@1 は **80% / 82% / 84% / 96%** でした。
 
-コールドスタート条件：東日本 ACA、Python 3.14.7、アプリ 0.5 vCPU / 1 GiB と同容量の Datadog サイドカー。各回でレプリカ数ゼロを確認し、リクエスト開始から `/health` の最初の HTTP 200 までを測定。その後 0.046 秒以内に `/ready` も通過。縮退クールダウンは 30 秒、イメージキャッシュは未消去、サイドカー認証情報は無効なプレースホルダーです。3.0 は過去のシステムログの値なので、厳密な A/B 高速化率や Datadog 送信の検証結果ではありません。
+コールドスタートは 2026-09-27 にリリース済みイメージで測定：東日本 ACA、Python 3.14.7、アプリ 0.5 vCPU / 1 GiB と同容量の Datadog サイドカー。各回でレプリカ数ゼロを確認し、リクエスト開始から `/health` の最初の HTTP 200 までを測定。その後 0.050 秒以内に `/ready` も通過。縮退クールダウンは 30 秒、イメージキャッシュは未消去、サイドカー認証情報は無効なプレースホルダーです。3.0 は過去のシステムログの値なので、厳密な A/B 高速化率や Datadog 送信の検証結果ではありません。
 
 3.2 の追加内容：セマンティック障害時の生成停止、Search 読み取り専用キー、キャッシュバイパス認証、引用検証、明示的な取り込みクリーンアップ、Azure OIDC デプロイ設定。
 
@@ -660,7 +662,7 @@ flowchart LR
     Agent -.-> DD["Datadog<br/>APM + LLM Observability"]
 ```
 
-**Datadog：APM + LLM Observability。** `rag.query` が各段階をまとめ、既存の Agent サイドカー（`127.0.0.1:8126`）経由で実行メタデータを送ります。LLM 計装は SDK エクスポートテストで検証し、デプロイ後に Datadog で受信を確認できます。
+**Datadog：APM + LLM Observability。** `rag.query` が各段階をまとめ、既存の Agent サイドカー（`127.0.0.1:8126`）経由で実行メタデータを送ります。2026-09-27 に `serverless-rag-api`、バージョン `3.2.0` の 4 スパン、処理時間、LLM 入出力トークンの受信を確認しました。質問・回答本文は収集しません。GitHub の `DD_API_KEY` が未設定のため、任意の DORA デプロイイベントはスキップされました。
 
 | トレース | 記録するデータ |
 |---|---|
@@ -774,7 +776,7 @@ Azure 評価は `reranker_calibration` も出力し、候補となる各下限�
 | `multilingual-e5-small`、fp32（3.0） | 1.000 | 1.000 | 1.000 | 1.000 |
 | `multilingual-e5-small`、ONNX int8（3.2、今回の Linux 実測） | **1.000** | **1.000** | **1.000** | **1.000** |
 
-3.2 ONNX 行于 2026-09-26 在 Linux 重跑，6 题全部 top-1 命中；MiniLM 与 3.0 fp32 行保留为历史基线。量化内核的近似并列仍可能换序，因此 CI 要求各语言 top-3 全部命中且 MRR ≥ 0.9。这个 9 段/6 题合成集只是回归门禁，不能当作生产答案准确率。
+3.2 ONNX は 2026-09-26 に Linux で再測定し、6 問すべてで top-1 に正解が入りました。MiniLM と 3.0 fp32 は過去の基準値です。量子化カーネルでは僅差の順位が変わるため、CI は各言語の top-3 全問ヒットと MRR ≥ 0.9 を要求します。この 9 段落・6 問の合成データは回帰テスト用であり、本番の回答正答率を表しません。
 
 #### 5. 品質ゲート（検証スクリプト）
 
