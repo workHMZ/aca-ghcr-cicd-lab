@@ -34,6 +34,11 @@ RUN python -m app.model_manifest --download "${EMBEDDING_MODEL_PATH}" --variant 
 
 FROM ${PYTHON_IMAGE} AS runtime
 
+# Dependencies are installed in the builder. Do not ship unused installers
+# or ensurepip's bundled wheel with their separate vendored dependencies.
+RUN python -m pip uninstall --yes pip \
+    && python -c "import shutil, sysconfig; shutil.rmtree(sysconfig.get_path('stdlib') + '/ensurepip')"
+
 ARG APP_VERSION=unknown
 ARG BUILD_SHA=unknown
 ARG IMAGE_TAG=unknown
