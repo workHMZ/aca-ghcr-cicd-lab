@@ -14,3 +14,12 @@ data/
 scripts/
 *.md
 *.code-workspace
+
+# Local documents and infrastructure state never enter the build context.
+/docs/
+/private-notes/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json

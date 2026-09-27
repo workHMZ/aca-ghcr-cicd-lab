@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+: "${CANARY_CACHE_BYPASS_TOKEN:?CANARY_CACHE_BYPASS_TOKEN is required}"
+
 RG="${1:-}"
 APP="${2:-}"
 CANARY_QUERY="${CANARY_QUERY:-Java 中 HashMap 的工作原理是什么？}"
@@ -54,7 +56,7 @@ check_health() {
   local url="$1"
   local timeout="${2:-10}"
   local attempts="${3:-24}"
-  echo "Health check: $url"
+  echo "Health check"
   for i in $(seq 1 "$attempts"); do
     if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
       echo "  OK"
@@ -70,7 +72,7 @@ check_health() {
 # Exercise the complete RAG path without logging the question, response body,
 # or optional bearer token. Requiring at least one context guarantees that the
 # request reached both Azure AI Search and OpenAI instead of taking the
-# no-results shortcut, and Cache-Control: no-cache bypasses the answer cache.
+# no-results shortcut. An authenticated header bypasses the answer cache.
 check_query() {
   local url="$1"
   local attempts="${2:-2}"
@@ -78,7 +80,7 @@ check_query() {
   local -a request_headers=(
     -H "Accept: application/json"
     -H "Content-Type: application/json"
-    -H "Cache-Control: no-cache"
+    -H "X-Canary-Token: ${CANARY_CACHE_BYPASS_TOKEN}"
   )
 
   payload=$(CANARY_QUERY="$CANARY_QUERY" CANARY_TOP_K="$CANARY_TOP_K" python3 -c \
@@ -88,14 +90,14 @@ check_query() {
     request_headers+=(-H "Authorization: Bearer ${CANARY_ACCESS_TOKEN}")
   fi
 
-  echo "RAG query check: $url"
+  echo "RAG query check"
   for i in $(seq 1 "$attempts"); do
     if curl -fsS --max-time "$CANARY_QUERY_TIMEOUT_SECONDS" \
       "${request_headers[@]}" \
       --data-binary "$payload" \
       "$url" \
       | python3 -c \
-        'import json, sys; data = json.load(sys.stdin); answer = data.get("answer"); contexts = data.get("contexts"); metadata = data.get("metadata") or {}; assert isinstance(answer, str) and answer.strip(), "empty answer"; assert isinstance(contexts, list) and contexts, "no search contexts"; assert metadata.get("refused") is not True, "model refused"; assert metadata.get("grounded") is True, "answer not grounded"' \
+        'import json, sys; data = json.load(sys.stdin); answer = data.get("answer"); contexts = data.get("contexts"); metadata = data.get("metadata") or {}; assert isinstance(answer, str) and answer.strip(), "empty answer"; assert isinstance(contexts, list) and contexts, "no search contexts"; assert metadata.get("refused") is not True, "model refused"; assert metadata.get("grounded") is True, "answer not grounded"; assert metadata.get("cached") is False, "canary must bypass cache"' \
       >/dev/null 2>&1; then
       echo "  Full RAG query OK"
       return 0
@@ -113,7 +115,7 @@ warmup_model() {
   local url="$1"
   local timeout="${2:-300}"
   local attempts="${3:-2}"
-  echo "Warmup: $url"
+  echo "Warmup"
   for i in $(seq 1 "$attempts"); do
     if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
       echo "  Warmup complete"
@@ -261,8 +263,7 @@ ENV_DOMAIN="${FQDN#*.}"
 CANARY_URL="https://${APP_NAME}---canary.${ENV_DOMAIN}/health"
 MAIN_URL="https://${FQDN}/health"
 
-echo "canary: $CANARY_URL"
-echo "main:   $MAIN_URL"
+echo "Canary and main health endpoints resolved"
 
 # Initial deployment (no stable or same revision)
 # 初回デプロイ（stable がないか、新旧同一の場合）

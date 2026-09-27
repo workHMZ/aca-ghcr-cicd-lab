@@ -4,10 +4,11 @@ from functools import lru_cache
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.model_manifest import DEFAULT_VARIANT, EmbeddingVariant
+from app import __version__
+from app.model_manifest import DEFAULT_VARIANT, MODEL_NAME, MODEL_REVISION, EmbeddingVariant
 
 # Load a developer .env before BaseSettings reads the process environment.
 # Existing process/container variables remain authoritative.
@@ -26,7 +27,7 @@ class Settings(BaseSettings):
         str_strip_whitespace=True,
     )
 
-    app_version: str = "3.1.0"
+    app_version: str = __version__
     build_sha: str = "unknown"
     image_tag: str = "unknown"
     env_name: str = Field(default="stg", validation_alias=AliasChoices("ENV_NAME", "DD_ENV"))
@@ -45,7 +46,8 @@ class Settings(BaseSettings):
 
     azure_search_endpoint: str | None = None
     azure_search_index_name: str = "ragdocs-v4"
-    azure_search_api_key: str | None = None
+    azure_search_query_key: SecretStr | None = None
+    canary_cache_bypass_token: SecretStr | None = None
     search_candidate_count: int = Field(default=50, ge=10, le=1000)
     search_semantic_enabled: bool = True
     search_semantic_configuration: str = "rag-semantic"
@@ -56,13 +58,11 @@ class Settings(BaseSettings):
     search_top_k_max: int = Field(default=10, ge=1, le=50)
     max_question_chars: int = Field(default=4_000, ge=1, le=100_000)
 
-    embedding_model_name: Literal["intfloat/multilingual-e5-small"] = Field(
-        default="intfloat/multilingual-e5-small",
+    embedding_model_name: str = Field(
+        default=MODEL_NAME,
         validation_alias=AliasChoices("EMBEDDING_MODEL", "EMBEDDING_MODEL_NAME"),
     )
-    embedding_model_revision: Literal["614241f622f53c4eeff9890bdc4f31cfecc418b3"] = (
-        "614241f622f53c4eeff9890bdc4f31cfecc418b3"
-    )
+    embedding_model_revision: str = MODEL_REVISION
     embedding_variant: EmbeddingVariant = DEFAULT_VARIANT
     embedding_model_path: str | None = None
     embedding_offline: bool = Field(
@@ -91,9 +91,11 @@ class Settings(BaseSettings):
     query_daily_limit: int = Field(default=500, ge=0, le=1_000_000)
 
     @model_validator(mode="after")
-    def validate_cross_field_bounds(self) -> "Settings":
+    def validate_cross_field_bounds(self) -> Settings:
         if self.search_top_k_default > self.search_top_k_max:
             raise ValueError("SEARCH_TOP_K_DEFAULT cannot exceed SEARCH_TOP_K_MAX")
+        if self.embedding_model_name != MODEL_NAME or self.embedding_model_revision != MODEL_REVISION:
+            raise ValueError("Embedding model and revision must match app.model_manifest")
         return self
 
 

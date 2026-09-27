@@ -92,3 +92,25 @@ def test_download_rejects_tampered_bytes(monkeypatch: pytest.MonkeyPatch, tmp_pa
     with pytest.raises(RuntimeError, match="Checksum mismatch"):
         model_manifest.ensure_model_files(tmp_path, "onnx-qint8", allow_download=True)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_tokenizer_download_does_not_download_model(monkeypatch, tmp_path):
+    _manifest(monkeypatch, {"tokenizer.json": b"tok", "model.onnx": b"model"})
+    requested = []
+
+    def urlopen(url, timeout):
+        requested.append(url)
+        return io.BytesIO(b"tok")
+
+    monkeypatch.setattr(model_manifest.urllib.request, "urlopen", urlopen)
+    model_manifest.ensure_tokenizer_file(tmp_path, allow_download=True)
+    assert len(requested) == 1
+    assert requested[0].endswith("tokenizer.json")
+    assert [p.name for p in tmp_path.iterdir()] == ["tokenizer.json"]
+
+
+@pytest.mark.parametrize("name", ["EMBEDDING_MODEL", "EMBEDDING_MODEL_REVISION"])
+def test_settings_reject_model_drift(monkeypatch, name):
+    monkeypatch.setenv(name, "wrong")
+    with pytest.raises(ValueError, match="must match"):
+        Settings()

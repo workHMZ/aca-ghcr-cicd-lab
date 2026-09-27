@@ -10,13 +10,13 @@ resource "azuread_service_principal" "github_actions" {
   client_id = azuread_application.github_actions.client_id
 }
 
-resource "azuread_service_principal_password" "github_actions" {
-  service_principal_id = azuread_service_principal.github_actions.id
-  end_date             = timeadd(timestamp(), "8760h") # 1 year
-
-  lifecycle {
-    ignore_changes = [end_date]
-  }
+# Confirm the exact GitHub OIDC subject before applying; never infer it from names.
+resource "azuread_application_federated_identity_credential" "github_stg" {
+  application_id = azuread_application.github_actions.id
+  display_name   = "github-actions-stg"
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://token.actions.githubusercontent.com"
+  subject        = var.github_oidc_subject
 }
 
 # Contributor role on the Resource Group

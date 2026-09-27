@@ -124,3 +124,93 @@ def test_upload_batch_reports_indexing_failures() -> None:
     with pytest.raises(RuntimeError, match="failed to index"):
         ingest._upload_batch(FailingClient(), [{"id": "k"}], stats)  # type: ignore[arg-type]
     assert stats.failed == 1
+
+
+class StatefulClient(SearchClient):
+    def __init__(self, sources):
+        super().__init__()
+        self.existing = [{"id": "old-" + source, "source": source} for source in sources]
+
+    def search(self, **kwargs):
+        if "filter" in kwargs:
+            return [
+                d for d in self.existing if ingest._source_document_prefix(d["source"]) in kwargs["filter"]
+            ]
+        return self.existing
+
+
+def test_empty_source_deletes_previous_chunks(tmp_path, embedded):
+    (tmp_path / "empty.txt").write_text("")
+    client = StatefulClient(["empty.txt", "unselected.pdf"])
+    stats = _run(client, tmp_path, embedded)
+    assert stats.chunks == 0
+    assert client.deleted == [{"id": "old-empty.txt"}]
+
+
+def test_full_sync_deletes_removed_source(tmp_path, embedded):
+    (tmp_path / "keep.txt").write_text("useful content")
+    client = StatefulClient(["keep.txt", "removed.pdf"])
+    stats = _run(client, tmp_path, embedded, prune_missing=True)
+    assert {d["id"] for d in client.deleted} == {"old-keep.txt", "old-removed.pdf"}
+    assert stats.deleted == 2
+
+
+def test_glob_preserves_unselected_sources(tmp_path, embedded):
+    (tmp_path / "keep.txt").write_text("useful content")
+    client = StatefulClient(["keep.txt", "unselected.pdf"])
+    _run(client, tmp_path, embedded, patterns=["*.txt"])
+    assert client.deleted == [{"id": "old-keep.txt"}]
+
+
+def test_upload_failure_does_not_delete_any_sources(tmp_path, embedded):
+    (tmp_path / "keep.txt").write_text("useful content")
+
+    class FailedClient(StatefulClient):
+        def merge_or_upload_documents(self, **kwargs):
+            return [SimpleNamespace(succeeded=False)]
+
+    client = FailedClient(["keep.txt", "removed.pdf"])
+    with pytest.raises(RuntimeError, match="failed to index"):
+        _run(client, tmp_path, embedded, prune_missing=True)
+    assert client.deleted == []
+
+
+@pytest.mark.parametrize("patterns", [None, ["*.txt"]])
+def test_prune_rejects_empty_or_partial_selection(tmp_path, embedded, patterns):
+    with pytest.raises(RuntimeError, match=r"empty source selection|cannot be combined"):
+        _run(StatefulClient([]), tmp_path, embedded, prune_missing=True, patterns=patterns)
+
+
+@pytest.mark.parametrize("results", [[], [SimpleNamespace(succeeded=False)]])
+def test_delete_failure_is_reported(results):
+    class FailedDelete(SearchClient):
+        def delete_documents(self, **kwargs):
+            return results
+
+    stats = ingest.IngestionStats()
+    with pytest.raises(RuntimeError, match=r"incomplete|Failed to delete"):
+        ingest._delete_document_ids(FailedDelete(), ["id"], stats)
+    assert stats.failed == 1
+
+
+def test_dry_run_uses_tokenizer_without_inference_or_search(tmp_path, monkeypatch):
+    import sys
+
+    from tokenizers import Tokenizer as RealTokenizer
+    from tokenizers.models import WordLevel
+
+    from app import model_manifest
+
+    tokenizer_dir = tmp_path / "model"
+    tokenizer_dir.mkdir()
+    RealTokenizer(WordLevel({"[UNK]": 0}, unk_token="[UNK]")).save(str(tokenizer_dir / "tokenizer.json"))
+    data_dir = tmp_path / "docs"
+    data_dir.mkdir()
+    (data_dir / "guide.txt").write_text("some useful content")
+    monkeypatch.setattr(ingest.embedding.settings, "embedding_model_path", str(tokenizer_dir))
+    monkeypatch.setattr(ingest.embedding.settings, "embedding_offline", True)
+    monkeypatch.setattr(ingest.embedding, "_get_embedder", lambda: pytest.fail("must not load model"))
+    monkeypatch.setattr(ingest, "SearchClient", lambda **_: pytest.fail("must not access Search"))
+    monkeypatch.setattr(sys, "argv", ["ingest.py", "--data-dir", str(data_dir), "--dry-run"])
+    assert ingest.main() == 0
+    assert not (tokenizer_dir / model_manifest.MODEL_FILES["onnx-qint8"].local_name).exists()

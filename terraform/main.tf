@@ -5,8 +5,7 @@ resource "azurerm_resource_group" "main" {
 }
 
 # Log Analytics Workspace (required by Container Apps Environment).
-# The first 5 GB/month of ingestion is free; the daily cap guarantees an
-# idle-by-default lab can never be billed for a log storm.
+# The daily cap is a best-effort guardrail; overshoot can still be billed.
 resource "azurerm_log_analytics_workspace" "main" {
   name                = coalesce(var.log_analytics_workspace_name, "log-${var.container_app_env_name}")
   location            = azurerm_resource_group.main.location
@@ -27,23 +26,24 @@ resource "azurerm_container_app_environment" "main" {
 
 locals {
   app_env = {
-    AZURE_SEARCH_ENDPOINT    = var.azure_search_endpoint
-    AZURE_SEARCH_INDEX_NAME  = var.azure_search_index_name
-    OPENAI_MODEL             = var.openai_model
-    OPENAI_REASONING_EFFORT  = var.openai_reasoning_effort
-    EMBEDDING_MODEL          = var.embedding_model
-    EMBEDDING_MODEL_REVISION = var.embedding_model_revision
-    EMBEDDING_VARIANT        = var.embedding_variant
-    EMBEDDING_OFFLINE        = "1"
-    EMBEDDING_THREADS        = "1"
-    ENV_NAME                 = var.environment_name
-    DD_TRACE_ENABLED         = tostring(var.enable_datadog_sidecar)
+    AZURE_SEARCH_ENDPOINT   = var.azure_search_endpoint
+    AZURE_SEARCH_INDEX_NAME = var.azure_search_index_name
+    OPENAI_MODEL            = var.openai_model
+    OPENAI_REASONING_EFFORT = var.openai_reasoning_effort
+    EMBEDDING_OFFLINE       = "1"
+    EMBEDDING_THREADS       = "1"
+    ENV_NAME                = var.environment_name
+    DD_TRACE_ENABLED        = tostring(var.enable_datadog_sidecar)
+    DD_LLMOBS_ENABLED       = tostring(var.enable_datadog_sidecar)
+    DD_TRACE_OPENAI_ENABLED = "false"
   }
   datadog_env = {
-    DD_SITE            = var.datadog_site
-    DD_ENV             = var.datadog_environment
-    DD_SERVICE         = var.datadog_service
-    DD_TRACE_AGENT_URL = "http://127.0.0.1:8126"
+    DD_SITE                     = var.datadog_site
+    DD_ENV                      = var.datadog_environment
+    DD_SERVICE                  = var.datadog_service
+    DD_TRACE_AGENT_URL          = "http://127.0.0.1:8126"
+    DD_LLMOBS_ML_APP            = var.datadog_service
+    DD_LLMOBS_AGENTLESS_ENABLED = "false"
   }
 }
 
@@ -83,8 +83,8 @@ resource "azurerm_container_app" "main" {
       }
 
       env {
-        name        = "AZURE_SEARCH_API_KEY"
-        secret_name = "azure-search-api-key"
+        name        = "AZURE_SEARCH_QUERY_KEY"
+        secret_name = "azure-search-query-key"
       }
 
       env {
@@ -92,13 +92,9 @@ resource "azurerm_container_app" "main" {
         secret_name = "openai-key"
       }
 
-      dynamic "env" {
-        for_each = var.enable_datadog_sidecar ? [1] : []
-
-        content {
-          name        = "DD_API_KEY"
-          secret_name = "dd-api-key"
-        }
+      env {
+        name        = "CANARY_CACHE_BYPASS_TOKEN"
+        secret_name = "canary-cache-bypass-token"
       }
 
       # /health does not touch dependencies, so it gates startup as soon as
@@ -195,7 +191,7 @@ resource "azurerm_container_app" "main" {
 
   # This resource reconciles the already-bootstrapped lab environment; it is
   # not a self-contained secret bootstrap. CD owns the immutable application
-  # image, per-revision traffic, and registry credential updates. Secret values
+  # image and per-revision traffic. Public GHCR images need no registry credentials. Secret values
   # are created out of band and intentionally never enter source control or
   # Terraform state; Terraform still documents and manages their env references.
   lifecycle {

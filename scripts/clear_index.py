@@ -127,7 +127,7 @@ def main() -> int:
     client = SearchClient(
         endpoint=_required_env("AZURE_SEARCH_ENDPOINT"),
         index_name=index_name,
-        credential=AzureKeyCredential(_required_env("AZURE_SEARCH_API_KEY")),
+        credential=AzureKeyCredential(_required_env("AZURE_SEARCH_ADMIN_KEY")),
     )
     stats = clear_index(client, batch_size=args.batch_size)
     print(json.dumps({"index": index_name, **stats}, ensure_ascii=False))

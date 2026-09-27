@@ -73,29 +73,6 @@ variable "openai_reasoning_effort" {
   }
 }
 
-variable "embedding_model" {
-  description = "Pinned Hugging Face embedding model identifier"
-  type        = string
-  default     = "intfloat/multilingual-e5-small"
-}
-
-variable "embedding_model_revision" {
-  description = "Immutable Hugging Face embedding model revision"
-  type        = string
-  default     = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
-}
-
-variable "embedding_variant" {
-  description = "Embedding runtime variant baked into the image and recorded on every indexed chunk"
-  type        = string
-  default     = "onnx-qint8"
-
-  validation {
-    condition     = contains(["onnx-qint8", "onnx-fp32"], var.embedding_variant)
-    error_message = "embedding_variant must be onnx-qint8 or onnx-fp32."
-  }
-}
-
 variable "environment_name" {
   description = "Deployment environment name"
   type        = string
@@ -200,7 +177,7 @@ variable "log_analytics_workspace_name" {
 }
 
 variable "log_analytics_daily_quota_gb" {
-  description = "Daily Log Analytics ingestion cap; 0.16 GB/day stays inside the 5 GB/month free allowance"
+  description = "Best-effort daily ingestion cap; overshoot can still be ingested and billed"
   type        = number
   default     = 0.16
 
@@ -214,4 +191,13 @@ variable "service_principal_name" {
   description = "Display name of the Service Principal for GitHub Actions"
   type        = string
   default     = "sp-github-rag-deploy"
+}
+
+variable "github_oidc_subject" {
+  description = "Exact observed OIDC subject for the stg environment, including immutable IDs when enabled"
+  type        = string
+  validation {
+    condition     = startswith(var.github_oidc_subject, "repo:") && endswith(var.github_oidc_subject, ":environment:stg")
+    error_message = "Use the exact stg environment subject from GitHub OIDC token details."
+  }
 }

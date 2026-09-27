@@ -35,7 +35,6 @@ env:
   CONTAINER_CPU: '0.5'
   CONTAINER_MEMORY: 1Gi
   AZURE_SEARCH_INDEX_NAME: ragdocs-v4
-  EMBEDDING_VARIANT: onnx-qint8
 
 jobs:
   deploy:
@@ -46,6 +45,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      id-token: write
 
     steps:
       - name: Checkout deployed revision
@@ -56,14 +56,9 @@ jobs:
       - name: Log in to Azure
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Prepare immutable image URL
         id: image
@@ -149,6 +144,14 @@ jobs:
             "${{ steps.image.outputs.image_url }}" \
             >/dev/null
 
+      - name: Check deployment prerequisites
+        env:
+          CANARY_CACHE_BYPASS_TOKEN: ${{ secrets.CANARY_CACHE_BYPASS_TOKEN }}
+        run: |
+          test -n "$CANARY_CACHE_BYPASS_TOKEN"
+          names=$(az containerapp secret list --name "$AZURE_CONTAINER_APP_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --query '[].name' -o json)
+          jq -e 'index("azure-search-query-key") != null and index("canary-cache-bypass-token") != null' <<< "$names" >/dev/null
+
       - name: Ensure Multiple revisions mode
         shell: bash
         run: |
@@ -212,8 +215,6 @@ jobs:
         id: candidate
         shell: bash
         env:
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
           STABLE_REVISION: ${{ steps.stable.outputs.stable_revision }}
           # Optional override; when unset, tracing follows whether the Datadog
           # Agent sidecar is deployed (terraform enable_datadog_sidecar).
@@ -251,13 +252,6 @@ jobs:
           fi
           echo "Datadog tracing: ${dd_trace_enabled}"
 
-          az containerapp registry set \
-            --name "${AZURE_CONTAINER_APP_NAME}" \
-            --resource-group "${AZURE_RESOURCE_GROUP}" \
-            --server "${REGISTRY}" \
-            --username "${GHCR_USERNAME}" \
-            --password "${GHCR_TOKEN}" \
-            --output none
           az containerapp update \
             --name "${AZURE_CONTAINER_APP_NAME}" \
             --resource-group "${AZURE_RESOURCE_GROUP}" \
@@ -265,16 +259,20 @@ jobs:
             --image "${{ steps.image.outputs.image_url }}" \
             --cpu "${CONTAINER_CPU}" \
             --memory "${CONTAINER_MEMORY}" \
+            --remove-env-vars AZURE_SEARCH_API_KEY DD_API_KEY EMBEDDING_MODEL EMBEDDING_MODEL_REVISION EMBEDDING_VARIANT \
             --set-env-vars \
+              AZURE_SEARCH_QUERY_KEY=secretref:azure-search-query-key \
+              CANARY_CACHE_BYPASS_TOKEN=secretref:canary-cache-bypass-token \
               "AZURE_SEARCH_INDEX_NAME=${AZURE_SEARCH_INDEX_NAME}" \
               OPENAI_MODEL=gpt-5.6-terra \
               OPENAI_REASONING_EFFORT=low \
-              EMBEDDING_MODEL=intfloat/multilingual-e5-small \
-              EMBEDDING_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3 \
-              "EMBEDDING_VARIANT=${EMBEDDING_VARIANT}" \
               EMBEDDING_OFFLINE=1 \
               EMBEDDING_THREADS=1 \
               "DD_TRACE_ENABLED=${dd_trace_enabled}" \
+              "DD_LLMOBS_ENABLED=${dd_trace_enabled}" \
+              DD_LLMOBS_ML_APP=serverless-rag-api \
+              DD_LLMOBS_AGENTLESS_ENABLED=false \
+              DD_TRACE_OPENAI_ENABLED=false \
             --output none
 
           candidate_revision=$(az containerapp show \
@@ -302,6 +300,7 @@ jobs:
           STABLE_REV: ${{ steps.stable.outputs.stable_revision }}
           NEW_REV: ${{ steps.candidate.outputs.candidate_revision }}
           CANARY_QUERY: ${{ vars.CANARY_QUERY || 'Java 中 HashMap 的工作原理是什么？' }}
+          CANARY_CACHE_BYPASS_TOKEN: ${{ secrets.CANARY_CACHE_BYPASS_TOKEN }}
           CANARY_TOP_K: '3'
           CANARY_QUERY_TIMEOUT_SECONDS: '180'
         run: bash scripts/deploy_canary.sh "$RG" "$APP"

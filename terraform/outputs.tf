@@ -1,6 +1,7 @@
 output "container_app_url" {
   description = "FQDN of the Container App"
   value       = "https://${azurerm_container_app.main.ingress[0].fqdn}"
+  sensitive   = true
 }
 
 output "sp_client_id" {

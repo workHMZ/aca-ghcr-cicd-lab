@@ -264,7 +264,7 @@ def main() -> int:
 
     create_index(
         endpoint=_required_env("AZURE_SEARCH_ENDPOINT"),
-        api_key=_required_env("AZURE_SEARCH_API_KEY"),
+        api_key=_required_env("AZURE_SEARCH_ADMIN_KEY"),
         index_name=index_name,
         dimension=get_dimension(),
         delete_existing=args.delete_existing,
