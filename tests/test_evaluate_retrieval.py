@@ -66,7 +66,7 @@ def test_score_rankings_reports_recall_and_truncated_mrr() -> None:
 
     result = evaluator.score_rankings(queries, rankings, cutoffs=(1, 3), match_field="id")
 
-    assert result["overall"] == {"recall@1": 0.5, "recall@3": 0.5, "mrr": 0.5}
+    assert result["overall"] == {"page_hit_rate@1": 0.5, "page_hit_rate@3": 0.5, "mrr": 0.5}
     assert result["by_language"]["ja"]["mrr"] == 0.0
 
 
@@ -82,7 +82,7 @@ def test_reranker_calibration_summarises_floors() -> None:
     report = evaluator._reranker_calibration([query], [ranking], "page", floors=(1.5,), top_k=5)
 
     assert report["relevant_min"] == 2.5
-    assert report["floor_1.5"] == {"relevant_kept": 1.0, "other_dropped": 1.0}
+    assert report["floor_1.5"] == {"relevant_kept": 1.0, "unlabelled_dropped": 1.0}
 
 
 def test_model_specs_pair_revisions_with_models() -> None:

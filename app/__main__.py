@@ -31,6 +31,9 @@ def command(environ: Mapping[str, str] = os.environ) -> list[str]:
 
 
 def main() -> None:
+    # Manual LLM spans record metrics without automatic prompt/response capture.
+    # Set this before ddtrace-run initializes either APM or LLM integrations.
+    os.environ["DD_TRACE_OPENAI_ENABLED"] = "false"
     args = command()
     os.execvp(args[0], args)  # noqa: S606 - fixed argv, no shell
 

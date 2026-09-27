@@ -61,6 +61,7 @@ class IngestionStats:
     embedded: int = 0
     uploaded: int = 0
     failed: int = 0
+    deleted: int = 0
     elapsed_seconds: float = 0.0
 
 
@@ -152,13 +153,12 @@ def _iter_records(
     data_dir: Path,
     tokenizer: Any,
     *,
-    patterns: Sequence[str] | None,
+    paths: Sequence[Path],
     chunk_tokens: int,
     min_chunk_tokens: int,
     overlap_tokens: int,
     stats: IngestionStats,
 ) -> Iterator[ChunkRecord]:
-    paths = select_source_files(data_dir, patterns)
     print(f"Selected {len(paths)} files in {data_dir}:")
     for path in paths:
         print(f"  - {path.relative_to(data_dir).as_posix()}")
@@ -263,19 +263,31 @@ def _delete_stale_source_chunks(
         select=["id"],
     )
     stale_ids = [str(result["id"]) for result in results if str(result["id"]) not in active_ids]
-    if not stale_ids:
-        return
-    for stale_batch in _batched(stale_ids, 1000):
-        delete_results = list(client.delete_documents(documents=[{"id": value} for value in stale_batch]))
-        if len(delete_results) != len(stale_batch):
-            stats.failed += len(stale_batch)
-            raise RuntimeError(f"Azure returned incomplete stale-delete results for {source}")
-        failures = [
-            result for result in delete_results if not bool(_result_value(result, "succeeded", False))
-        ]
+    _delete_document_ids(client, stale_ids, stats)
+
+
+def _delete_document_ids(client: SearchClient, ids: Sequence[str], stats: IngestionStats) -> None:
+    for batch in _batched(ids, 1000):
+        results = list(client.delete_documents(documents=[{"id": value} for value in batch]))
+        if len(results) != len(batch):
+            stats.failed += len(batch)
+            raise RuntimeError("Azure returned incomplete stale-delete results")
+        failures = [result for result in results if not bool(_result_value(result, "succeeded", False))]
         stats.failed += len(failures)
+        stats.deleted += len(results) - len(failures)
         if failures:
-            raise RuntimeError(f"Failed to delete {len(failures)} stale chunks for {source}")
+            raise RuntimeError(f"Failed to delete {len(failures)} stale chunks")
+
+
+def _selected_paths(data_dir: Path, patterns: Sequence[str] | None, prune_missing: bool) -> list[Path]:
+    if not data_dir.is_dir():
+        raise RuntimeError(f"Data directory does not exist: {data_dir}")
+    if prune_missing and patterns:
+        raise RuntimeError("--prune-missing cannot be combined with --glob")
+    paths = select_source_files(data_dir, patterns)
+    if prune_missing and not paths:
+        raise RuntimeError("Refusing to prune an empty source selection")
+    return paths
 
 
 def ingest(
@@ -293,16 +305,20 @@ def ingest(
     embedding_batch_size: int,
     upload_batch_size: int,
     patterns: Sequence[str] | None = None,
+    prune_missing: bool = False,
 ) -> IngestionStats:
     stats = IngestionStats()
     started_at = time.monotonic()
     pending_uploads: list[dict[str, Any]] = []
-    active_ids_by_source: dict[str, set[str]] = {}
+    paths = _selected_paths(data_dir, patterns, prune_missing)
+    active_ids_by_source: dict[str, set[str]] = {
+        path.relative_to(data_dir).as_posix(): set() for path in paths
+    }
 
     records = _iter_records(
         data_dir,
         tokenizer,
-        patterns=patterns,
+        paths=paths,
         chunk_tokens=chunk_tokens,
         min_chunk_tokens=min_chunk_tokens,
         overlap_tokens=overlap_tokens,
@@ -353,6 +369,15 @@ def ingest(
     for source, active_ids in active_ids_by_source.items():
         _delete_stale_source_chunks(client, source=source, active_ids=active_ids, stats=stats)
 
+    if prune_missing:
+        # Collect all IDs before deleting: mutations during paginated reads can skip documents.
+        stale_ids = [
+            str(result["id"])
+            for result in client.search(search_text="*", select=["id", "source"])
+            if result.get("source") not in active_ids_by_source
+        ]
+        _delete_document_ids(client, stale_ids, stats)
+
     stats.elapsed_seconds = round(time.monotonic() - started_at, 3)
     return stats
 
@@ -389,6 +414,11 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Target index (default: AZURE_SEARCH_INDEX_NAME_V4 or ragdocs-v4)",
     )
+    parser.add_argument(
+        "--prune-missing",
+        action="store_true",
+        help="Full sync: delete indexed sources missing from this authoritative data directory; no --glob",
+    )
     parser.add_argument("--chunk-tokens", type=_positive_int, default=DEFAULT_CHUNK_TOKENS)
     parser.add_argument("--min-chunk-tokens", type=_positive_int, default=DEFAULT_MIN_CHUNK_TOKENS)
     parser.add_argument("--overlap-tokens", type=_non_negative_int, default=DEFAULT_OVERLAP_TOKENS)
@@ -414,6 +444,7 @@ def main() -> int:
     if not data_dir.is_dir():
         raise RuntimeError(f"Data directory does not exist: {data_dir}")
 
+    paths = _selected_paths(data_dir, args.patterns, args.prune_missing)
     index_name = (args.index_name or _default_index_name()).strip()
     model_name, model_revision, model_variant, tokenizer, dimension = _embedding_metadata()
     print(
@@ -438,7 +469,7 @@ def main() -> int:
             _iter_records(
                 data_dir,
                 tokenizer,
-                patterns=args.patterns,
+                paths=paths,
                 chunk_tokens=args.chunk_tokens,
                 min_chunk_tokens=args.min_chunk_tokens,
                 overlap_tokens=args.overlap_tokens,
@@ -461,7 +492,7 @@ def main() -> int:
     client = SearchClient(
         endpoint=_required_env("AZURE_SEARCH_ENDPOINT"),
         index_name=index_name,
-        credential=AzureKeyCredential(_required_env("AZURE_SEARCH_API_KEY")),
+        credential=AzureKeyCredential(_required_env("AZURE_SEARCH_ADMIN_KEY")),
     )
     stats = ingest(
         client=client,
@@ -477,6 +508,7 @@ def main() -> int:
         embedding_batch_size=args.embedding_batch_size,
         upload_batch_size=args.upload_batch_size,
         patterns=args.patterns,
+        prune_missing=args.prune_missing,
     )
     print(json.dumps({"status": "complete", **asdict(stats)}, ensure_ascii=False))
     return 0

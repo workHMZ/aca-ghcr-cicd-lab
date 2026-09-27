@@ -2,8 +2,8 @@ terraform {
   required_version = "~> 1.15"
 
   # Configure the Azure Storage account/container/key through `terraform init
-  # -backend-config=...`. This prevents the service-principal password resource
-  # from silently landing in an unencrypted local state file.
+  # -backend-config=...`. Keep the existing encrypted remote state during OIDC
+  # migration; previous state versions can contain retired client secrets.
   backend "azurerm" {}
 
   required_providers {
