@@ -12,11 +12,11 @@ Cost-optimized serverless multilingual Retrieval-Augmented Generation (RAG) serv
 | 3.2.0 snapshot | Status |
 |---|---|
 | Release | [v3.2.0](https://github.com/workHMZ/aca-ghcr-cicd-lab/releases/tag/v3.2.0) · Python 3.14.7 |
-| Live deployment | [API health](https://serverless-rag-api.wonderfulforest-72b21477.japaneast.azurecontainerapps.io/health) · `dcaebb4` · revision `0000052`, 100% traffic |
+| Deployment | Azure Container Apps · Japan East · v3.2.0 (verified 2026-09-27) |
 | Verification | **123 tests passed · 91.74% coverage** (2026-09-27) |
 | Runtime target | Application **0.5 vCPU / 1 GiB**; **1 vCPU / 2 GiB** including Datadog sidecar |
 | Retrieval benchmark | **96% / 98% Page Hit Rate@1 / Page Hit Rate@3 · MRR@10 0.966667** (2026-09-26) |
-| Cold start, released image | **21.255 s median** · 3 runs, 20.263–23.191 s (2026-09-27) |
+| Cold start, initial 3.2 image | **21.255 s median** · 3 runs, 20.263–23.191 s (2026-09-27) |
 
 ---
 
@@ -96,7 +96,7 @@ Production RAG usually brings recurring embedding API costs, uneven retrieval ac
 
 Measured 2026-09-26: 50 labelled questions (zh 25 / ja 12 / en 13), the 521-chunk Java corpus in `ragdocs-v4`, and the current semantic retrieval path. Page Hit Rate measures whether a relevant page appears, not answer correctness. In the same run, BM25 / vector / hybrid / semantic Hit@1 were **80% / 82% / 84% / 96%**.
 
-Cold start measured 2026-09-27 with the released image: Japan East ACA, Python 3.14.7, application 0.5 vCPU / 1 GiB plus the same-sized Datadog sidecar. Each request started after replica count reached zero; timed to the first HTTP 200 from `/health`. `/ready` passed within 0.050 s afterward. The test used a 30 s scale-down cooldown; image caches were not cleared, and the sidecar used an invalid placeholder credential. The historical 3.0 value came from system logs, so this is not a controlled A/B speedup claim or a Datadog delivery test.
+Cold start measured 2026-09-27 with the initial 3.2 image before the privacy-only rebuild: Japan East ACA, Python 3.14.7, application 0.5 vCPU / 1 GiB plus the same-sized Datadog sidecar. Each request started after replica count reached zero; timed to the first HTTP 200 from `/health`. `/ready` passed within 0.050 s afterward. The test used a 30 s scale-down cooldown; image caches were not cleared, and the sidecar used an invalid placeholder credential. The historical 3.0 value came from system logs, so this is not a controlled A/B speedup claim or a Datadog delivery test.
 
 New in 3.2: fail closed on semantic failures, require a read-only Search key, authenticate cache bypass, validate citations, make ingestion cleanup explicit, and configure Azure OIDC deployment.
 
@@ -355,7 +355,7 @@ az containerapp ingress traffic set \
 
 实测日期 2026-09-26：50 道标注题（中文 25 / 日文 12 / 英文 13），`ragdocs-v4` 中的 Java 资料共 521 个片段，使用当前语义检索路径。Page Hit Rate 表示是否命中相关页面，不是答案准确率。同轮 BM25 / 向量 / 混合 / 语义重排的 Hit@1 分别为 **80% / 82% / 84% / 96%**。
 
-冷启动于 2026-09-27 使用正式发布镜像实测：日本东部 ACA，Python 3.14.7，应用 0.5 vCPU / 1 GiB，加同等资源的 Datadog 边车。每轮先确认副本数为零，再从发起请求计时至 `/health` 首次返回 HTTP 200；随后 0.050 秒内 `/ready` 均通过。测试缩容冷却期为 30 秒，未清空镜像缓存，边车使用无效占位凭据。3.0 的历史值来自系统日志，因此不能据此声称严格 A/B 加速比例，也不代表 Datadog 上报已经验证。
+冷启动于 2026-09-27 使用隐私修订前的初版 3.2 镜像实测：日本东部 ACA，Python 3.14.7，应用 0.5 vCPU / 1 GiB，加同等资源的 Datadog 边车。每轮先确认副本数为零，再从发起请求计时至 `/health` 首次返回 HTTP 200；随后 0.050 秒内 `/ready` 均通过。测试缩容冷却期为 30 秒，未清空镜像缓存，边车使用无效占位凭据。3.0 的历史值来自系统日志，因此不能据此声称严格 A/B 加速比例，也不代表 Datadog 上报已经验证。
 
 3.2 新增：语义失败时停止生成、Search 只读密钥、缓存绕过鉴权、引用检查、显式摄取清理，以及 Azure OIDC 部署配置。
 
@@ -614,7 +614,7 @@ az containerapp ingress traffic set \
 
 測定日 2026-09-26：ラベル付き 50 問（中文 25 / 日本語 12 / 英語 13）、`ragdocs-v4` の Java 資料 521 チャンク、現在のセマンティック検索を使用。Page Hit Rate は関連ページのヒット率であり、回答の正答率ではありません。同じ測定で BM25 / ベクトル / ハイブリッド / セマンティック再順位付けの Hit@1 は **80% / 82% / 84% / 96%** でした。
 
-コールドスタートは 2026-09-27 にリリース済みイメージで測定：東日本 ACA、Python 3.14.7、アプリ 0.5 vCPU / 1 GiB と同容量の Datadog サイドカー。各回でレプリカ数ゼロを確認し、リクエスト開始から `/health` の最初の HTTP 200 までを測定。その後 0.050 秒以内に `/ready` も通過。縮退クールダウンは 30 秒、イメージキャッシュは未消去、サイドカー認証情報は無効なプレースホルダーです。3.0 は過去のシステムログの値なので、厳密な A/B 高速化率や Datadog 送信の検証結果ではありません。
+コールドスタートは 2026-09-27 にプライバシー修正前の初版 3.2 イメージで測定：東日本 ACA、Python 3.14.7、アプリ 0.5 vCPU / 1 GiB と同容量の Datadog サイドカー。各回でレプリカ数ゼロを確認し、リクエスト開始から `/health` の最初の HTTP 200 までを測定。その後 0.050 秒以内に `/ready` も通過。縮退クールダウンは 30 秒、イメージキャッシュは未消去、サイドカー認証情報は無効なプレースホルダーです。3.0 は過去のシステムログの値なので、厳密な A/B 高速化率や Datadog 送信の検証結果ではありません。
 
 3.2 の追加内容：セマンティック障害時の生成停止、Search 読み取り専用キー、キャッシュバイパス認証、引用検証、明示的な取り込みクリーンアップ、Azure OIDC デプロイ設定。
 

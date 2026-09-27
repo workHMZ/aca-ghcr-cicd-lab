@@ -56,7 +56,7 @@ check_health() {
   local url="$1"
   local timeout="${2:-10}"
   local attempts="${3:-24}"
-  echo "Health check: $url"
+  echo "Health check"
   for i in $(seq 1 "$attempts"); do
     if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
       echo "  OK"
@@ -90,7 +90,7 @@ check_query() {
     request_headers+=(-H "Authorization: Bearer ${CANARY_ACCESS_TOKEN}")
   fi
 
-  echo "RAG query check: $url"
+  echo "RAG query check"
   for i in $(seq 1 "$attempts"); do
     if curl -fsS --max-time "$CANARY_QUERY_TIMEOUT_SECONDS" \
       "${request_headers[@]}" \
@@ -115,7 +115,7 @@ warmup_model() {
   local url="$1"
   local timeout="${2:-300}"
   local attempts="${3:-2}"
-  echo "Warmup: $url"
+  echo "Warmup"
   for i in $(seq 1 "$attempts"); do
     if curl -fsS --max-time "$timeout" "$url" >/dev/null 2>&1; then
       echo "  Warmup complete"
@@ -263,8 +263,7 @@ ENV_DOMAIN="${FQDN#*.}"
 CANARY_URL="https://${APP_NAME}---canary.${ENV_DOMAIN}/health"
 MAIN_URL="https://${FQDN}/health"
 
-echo "canary: $CANARY_URL"
-echo "main:   $MAIN_URL"
+echo "Canary and main health endpoints resolved"
 
 # Initial deployment (no stable or same revision)
 # 初回デプロイ（stable がないか、新旧同一の場合）

@@ -97,13 +97,6 @@ az containerapp create \
     --memory 1Gi \
     --output none
 
-# Get the app URL
-APP_URL=$(az containerapp show \
-    --name "$CONTAINER_APP_NAME" \
-    --resource-group "$RESOURCE_GROUP" \
-    --query properties.configuration.ingress.fqdn \
-    -o tsv)
-
 echo -e "${GREEN}✓ Container App created${NC}"
 echo ""
 
@@ -122,7 +115,6 @@ az ad app federated-credential create --id "$CLIENT_ID" --parameters "$FEDERATED
 rm -f "$FEDERATED_FILE"
 trap - EXIT
 
-echo "Container App URL: https://$APP_URL"
 echo "Set GitHub stg secrets AZURE_CLIENT_ID=$CLIENT_ID, AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
 echo "AZURE_TENANT_ID=$(az account show --query tenantId -o tsv)"
 echo "Also set CANARY_CACHE_BYPASS_TOKEN in GitHub stg and in the Container App."
