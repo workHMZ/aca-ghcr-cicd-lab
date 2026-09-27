@@ -42,7 +42,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   UV_VERSION: 0.12.18
-  PYTHON_VERSION: 3.12.14
+  PYTHON_VERSION: 3.14.7
   TERRAFORM_VERSION: 1.16.4
   ACTIONLINT_VERSION: 1.7.12
 
@@ -91,7 +91,7 @@ jobs:
             --model intfloat/multilingual-e5-small \
             --revision 614241f622f53c4eeff9890bdc4f31cfecc418b3 \
             | tee retrieval-eval.json
-          # Gate on top-3 recall rather than exact top-1: fixture query ja-gc is
+          # Gate on top-3 page hit rate rather than exact top-1: fixture query ja-gc is
           # a near tie (0.798 vs 0.794 cosine even in fp32) that int8 kernels
           # rank differently on x86 and ARM. Broken prefixes, pooling, or model
           # loading still drop expected passages out of the top 3 and fail here.
@@ -100,9 +100,9 @@ jobs:
 
           report = json.load(open("retrieval-eval.json", encoding="utf-8"))
           candidate = report["models"][1]["metrics"]
-          assert candidate["overall"]["recall@3"] >= 1.0, candidate["overall"]
+          assert candidate["overall"]["page_hit_rate@3"] >= 1.0, candidate["overall"]
           for language, metrics in candidate["by_language"].items():
-              assert metrics["recall@3"] >= 1.0, (language, metrics)
+              assert metrics["page_hit_rate@3"] >= 1.0, (language, metrics)
           assert candidate["overall"]["mrr"] >= 0.9, candidate["overall"]
           print("Retrieval regression gate passed:", candidate["overall"])
           PY
@@ -329,6 +329,10 @@ jobs:
         run: cosign sign --yes "${{ steps.image.outputs.image_repo }}@${{ steps.build.outputs.digest }}"
 
   deploy:
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
     name: Auto Canary Deploy to Azure
     needs: [quality, container-smoke, build-scan-sign-push]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

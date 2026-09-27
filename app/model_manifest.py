@@ -11,6 +11,7 @@ import hashlib
 import os
 import tempfile
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -98,9 +99,9 @@ def _download(url: str, destination: Path, expected_sha256: str) -> None:
     temporary.replace(destination)
 
 
-def ensure_model_files(
+def _ensure_files(
     model_dir: Path,
-    variant: EmbeddingVariant,
+    files: Iterable[ModelFile],
     *,
     allow_download: bool,
     verify: bool = False,
@@ -112,7 +113,7 @@ def ensure_model_files(
     while the hot startup path skips re-hashing ~130 MB on every cold start.
     """
 
-    for model_file in required_files(variant):
+    for model_file in files:
         target = model_dir / model_file.local_name
         if target.is_file():
             if verify and _sha256(target) != model_file.sha256:
@@ -123,6 +124,17 @@ def ensure_model_files(
         url = f"https://huggingface.co/{MODEL_NAME}/resolve/{MODEL_REVISION}/{model_file.repo_path}"
         _download(url, target, model_file.sha256)
     return model_dir
+
+
+def ensure_model_files(
+    model_dir: Path, variant: EmbeddingVariant, *, allow_download: bool, verify: bool = False
+) -> Path:
+    return _ensure_files(model_dir, required_files(variant), allow_download=allow_download, verify=verify)
+
+
+def ensure_tokenizer_file(model_dir: Path, *, allow_download: bool, verify: bool = False) -> Path:
+    """Prepare the tokenizer without downloading or loading any inference model."""
+    return _ensure_files(model_dir, (TOKENIZER_FILE,), allow_download=allow_download, verify=verify)
 
 
 def main() -> int:

@@ -2,8 +2,8 @@
 
 ## Supported version
 
-Security fixes apply to the latest `3.x` line on `main` (currently `3.1.0`). Earlier
-interview-lab releases are retained for learning and are not supported.
+This checkout is version `3.2.0`. Security fixes target the latest maintained `3.x`
+release; older interview-lab releases are retained for learning and are not supported.
 
 ## Reporting a vulnerability
 
@@ -25,10 +25,10 @@ This repository is an interview and learning project, not a hosted multi-tenant 
 - A query sends the user's question and retrieved chunks to OpenAI for generation, even with
   `store=false`. The API response also returns full retrieved chunk text to the caller. Corpus
   owners must treat both paths as deliberate data-disclosure boundaries.
-- GitHub Actions currently uses a long-lived Azure service-principal credential as an explicit lab trade-off. A production deployment should use a narrowly scoped federated identity.
-- Terraform creates that one-year service-principal password. Its value enters Terraform state,
-  so initialization must use the declared Azure Storage backend with access control, encryption,
-  locking, and a reviewed state-retention policy; never use or commit a local state file.
+- GitHub Actions uses Azure OIDC with a federated subject bound to the intended repository and environment. Configure and verify that trust before the first 3.2 deployment; retain legacy credentials until migration and rollback are verified.
+- Serving and retrieval evaluation require a read-only Search query key. Only operator-run index management and ingestion use an admin key.
+- Terraform state can contain sensitive infrastructure data. Use the declared Azure Storage backend with access control, encryption, locking, and a reviewed retention policy; never commit state or private variables.
+- Datadog LLM spans contain operational metadata and token counts, not questions, answers, document text, or raw exception messages. The entrypoint disables automatic OpenAI content capture; the Datadog key stays in the Agent sidecar.
 - PDF ingestion processes untrusted files. Run ingestion in an isolated environment, keep `pypdf` patched, and enforce file-size/page/time limits before exposing uploads to users.
   Ingestion is an operator-only CLI (`pypdf` is not in the serving image); use `--glob` to select
   exactly the public documents, because everything ingested is returned verbatim by the public API.

@@ -1,12 +1,14 @@
 # Environment variables
 .env
-.env.local
+.env.*
+!.env.example
 
 # Data directory (local use only)
 data/
 
 # Private working notes (never published)
 private-notes/
+/docs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

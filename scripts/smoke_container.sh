@@ -27,6 +27,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Check the base interpreter as well as the application virtual environment.
+docker exec "$container" /usr/local/bin/python -c '
+import importlib.util
+assert importlib.util.find_spec("pip") is None, "Runtime image must not contain pip"
+assert importlib.util.find_spec("ensurepip") is None, "Runtime image must not contain bundled pip"
+'
+
 probe() {
   docker exec "$container" python -c '
 import json, sys, urllib.error, urllib.request

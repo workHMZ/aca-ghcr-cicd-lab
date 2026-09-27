@@ -6,13 +6,15 @@
 
 set -euo pipefail
 
+: "${GITHUB_OIDC_SUBJECT:?Set the exact observed GitHub stg OIDC subject}"
+
 # Configuration - Modify these values
 RESOURCE_GROUP="rg-genai-student-jp"
 LOCATION="japaneast"  # Choose: japaneast, eastus, westeurope, etc.
 CONTAINER_APP_ENV="rag-env"
 CONTAINER_APP_NAME="serverless-rag-api"
 LOG_ANALYTICS_WORKSPACE="log-${CONTAINER_APP_ENV}"
-# 0.16 GB/day keeps log ingestion inside the 5 GB/month free allowance.
+# Best-effort cap: Azure can ingest and bill above the configured threshold.
 LOG_DAILY_QUOTA_GB="0.16"
 
 # Colors for output
@@ -105,78 +107,56 @@ APP_URL=$(az containerapp show \
 echo -e "${GREEN}✓ Container App created${NC}"
 echo ""
 
-# Create Service Principal for GitHub Actions. The JSON is written to a
-# permission-600 file and is never printed to the terminal.
-echo "Creating Service Principal for GitHub Actions..."
-SP_OUTPUT_FILE=$(mktemp "${TMPDIR:-/tmp}/azure-credentials.XXXXXX")
-chmod 600 "$SP_OUTPUT_FILE"
-
-cleanup_credentials_on_error() {
-    exit_code=$?
-    trap - EXIT
-    if [ "$exit_code" -ne 0 ]; then
-        rm -f "$SP_OUTPUT_FILE"
-    fi
-    exit "$exit_code"
-}
-trap cleanup_credentials_on_error EXIT
-
-az ad sp create-for-rbac \
-    --name "sp-github-rag-deploy" \
-    --role contributor \
-    --scopes "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RESOURCE_GROUP" \
-    --sdk-auth >"$SP_OUTPUT_FILE"
-
-python3 -c \
-    'import json, sys; data=json.load(open(sys.argv[1], encoding="utf-8")); print("Client ID:       " + data["clientId"]); print("Tenant ID:       " + data["tenantId"]); print("Subscription ID: " + data["subscriptionId"])' \
-    "$SP_OUTPUT_FILE"
-
+# Create a deployment identity without a password. Bootstrap is explicit;
+# existing installations should import/manage the identity through Terraform.
+echo "Creating OIDC application for GitHub Actions..."
+CLIENT_ID=$(az ad app create --display-name "sp-github-rag-deploy" --query appId -o tsv)
+SP_ID=$(az ad sp create --id "$CLIENT_ID" --query id -o tsv)
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+az role assignment create --assignee-object-id "$SP_ID" --assignee-principal-type ServicePrincipal \
+    --role Contributor --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP" --output none
+FEDERATED_FILE=$(mktemp)
+trap 'rm -f "$FEDERATED_FILE"' EXIT
+python3 -c 'import json, os; print(json.dumps({"name":"github-actions-stg", "issuer":"https://token.actions.githubusercontent.com", "subject":os.environ["GITHUB_OIDC_SUBJECT"], "audiences":["api://AzureADTokenExchange"]}))' > "$FEDERATED_FILE"
+az ad app federated-credential create --id "$CLIENT_ID" --parameters "$FEDERATED_FILE" --output none
+rm -f "$FEDERATED_FILE"
 trap - EXIT
 
-echo ""
-echo -e "${GREEN}=== Setup Complete! ===${NC}"
-echo ""
-echo -e "Container App URL: ${GREEN}https://$APP_URL${NC}"
-echo ""
-echo -e "${YELLOW}=== IMPORTANT: GitHub Secrets Setup ===${NC}"
-echo ""
-echo "The Service Principal JSON was written to a permission-600 temporary file:"
-echo "  $SP_OUTPUT_FILE"
-echo "Set it without printing the value:"
-echo "  gh secret set AZURE_CREDENTIALS < \"$SP_OUTPUT_FILE\""
-echo "Then securely delete the temporary file after confirming the secret:"
-echo "  rm -f \"$SP_OUTPUT_FILE\""
-echo ""
+echo "Container App URL: https://$APP_URL"
+echo "Set GitHub stg secrets AZURE_CLIENT_ID=$CLIENT_ID, AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
+echo "AZURE_TENANT_ID=$(az account show --query tenantId -o tsv)"
+echo "Also set CANARY_CACHE_BYPASS_TOKEN in GitHub stg and in the Container App."
 
 # Configure the application only when required values arrive via the process
 # environment. Shell history and terminal output never contain secret values.
-if [ -n "${AZURE_SEARCH_ENDPOINT:-}" ] && [ -n "${AZURE_SEARCH_API_KEY:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
-    echo "Configuring named Container Apps secrets and 3.1 environment..."
+if [ -n "${AZURE_SEARCH_ENDPOINT:-}" ] && [ -n "${AZURE_SEARCH_QUERY_KEY:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
+    : "${CANARY_CACHE_BYPASS_TOKEN:?CANARY_CACHE_BYPASS_TOKEN is required for CD}"
+    echo "Configuring named Container Apps secrets and 3.2 environment..."
 
     secret_args=(
-        "azure-search-api-key=$AZURE_SEARCH_API_KEY"
+        "azure-search-query-key=$AZURE_SEARCH_QUERY_KEY"
+        "canary-cache-bypass-token=$CANARY_CACHE_BYPASS_TOKEN"
         "openai-key=$OPENAI_API_KEY"
     )
     app_env_args=(
         "AZURE_SEARCH_ENDPOINT=$AZURE_SEARCH_ENDPOINT"
-        "AZURE_SEARCH_API_KEY=secretref:azure-search-api-key"
+        "AZURE_SEARCH_QUERY_KEY=secretref:azure-search-query-key"
+        "CANARY_CACHE_BYPASS_TOKEN=secretref:canary-cache-bypass-token"
         "AZURE_SEARCH_INDEX_NAME=ragdocs-v4"
         "OPENAI_API_KEY=secretref:openai-key"
         "OPENAI_MODEL=gpt-5.6-terra"
         "OPENAI_MAX_OUTPUT_TOKENS=1200"
         "OPENAI_REASONING_EFFORT=low"
         "OPENAI_VERBOSITY=low"
-        "EMBEDDING_MODEL=intfloat/multilingual-e5-small"
-        "EMBEDDING_MODEL_REVISION=614241f622f53c4eeff9890bdc4f31cfecc418b3"
-        "EMBEDDING_VARIANT=onnx-qint8"
         "EMBEDDING_OFFLINE=1"
         "EMBEDDING_THREADS=1"
         "DD_TRACE_ENABLED=false"
+        "DD_LLMOBS_ENABLED=false"
+        "DD_TRACE_OPENAI_ENABLED=false"
     )
 
     if [ -n "${DD_API_KEY:-}" ]; then
         secret_args+=("dd-api-key=$DD_API_KEY")
-        app_env_args+=("DD_API_KEY=secretref:dd-api-key")
     fi
 
     az containerapp secret set \
@@ -190,7 +170,7 @@ if [ -n "${AZURE_SEARCH_ENDPOINT:-}" ] && [ -n "${AZURE_SEARCH_API_KEY:-}" ] && 
         --set-env-vars "${app_env_args[@]}" \
         --output none
 
-    unset AZURE_SEARCH_API_KEY OPENAI_API_KEY
+    unset AZURE_SEARCH_QUERY_KEY OPENAI_API_KEY
     if [ -n "${DD_API_KEY:-}" ]; then
         unset DD_API_KEY
     fi

@@ -34,8 +34,10 @@ if str(PROJECT_ROOT) not in sys.path:
 DEFAULT_INDEX_NAME = "ragdocs-v4"
 DEFAULT_GOLDEN_PATH = PROJECT_ROOT / "eval" / "golden.jsonl"
 DEFAULT_CORPUS_PATH = PROJECT_ROOT / "eval" / "corpus.jsonl"
-DEFAULT_E5_MODEL = "intfloat/multilingual-e5-small"
-DEFAULT_E5_REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
+from app.model_manifest import MODEL_NAME, MODEL_REVISION
+
+DEFAULT_E5_MODEL = MODEL_NAME
+DEFAULT_E5_REVISION = MODEL_REVISION
 SEMANTIC_CONFIGURATION_NAME = "rag-semantic"
 AZURE_MODES = ("semantic", "hybrid", "vector", "bm25")
 CUTOFFS = (1, 3, 5)
@@ -261,7 +263,7 @@ def _azure_rankings(
     client = SearchClient(
         endpoint=_required_env("AZURE_SEARCH_ENDPOINT"),
         index_name=index_name,
-        credential=AzureKeyCredential(_required_env("AZURE_SEARCH_API_KEY")),
+        credential=AzureKeyCredential(_required_env("AZURE_SEARCH_QUERY_KEY")),
     )
     expected_metadata = (embed.get_model_name(), embed.get_model_revision(), embed.get_embedding_variant())
     rankings: list[list[dict[str, Any]]] = []
@@ -339,7 +341,7 @@ def _metrics_for_ranks(ranks: Sequence[int | None], cutoffs: Sequence[int]) -> d
     if count == 0:
         raise ValueError("Cannot calculate metrics for zero queries")
     metrics = {
-        f"recall@{cutoff}": round(
+        f"page_hit_rate@{cutoff}": round(
             sum(1 for rank in ranks if rank is not None and rank <= cutoff) / count,
             6,
         )
@@ -379,7 +381,9 @@ def _reranker_calibration(
     for floor in floors:
         report[f"floor_{floor:g}"] = {
             "relevant_kept": round(sum(1 for s in relevant if s >= floor) / len(relevant), 3),
-            "other_dropped": round(sum(1 for s in other if s < floor) / len(other), 3) if other else None,
+            "unlabelled_dropped": round(sum(1 for s in other if s < floor) / len(other), 3)
+            if other
+            else None,
         }
     return report
 
@@ -506,7 +510,7 @@ def _comparison(results: Sequence[dict[str, Any]]) -> dict[str, float] | None:
     candidate = results[1]["metrics"]["overall"]
     return {
         metric: round(float(candidate[metric]) - float(baseline[metric]), 6)
-        for metric in ("recall@1", "recall@3", "mrr")
+        for metric in ("page_hit_rate@1", "page_hit_rate@3", "mrr")
     }
 
 

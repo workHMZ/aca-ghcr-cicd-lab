@@ -17,9 +17,12 @@ from app.config import settings
 from app.model_manifest import (
     EMBEDDING_DIMENSION,
     MODEL_FILES,
+    MODEL_NAME,
+    MODEL_REVISION,
     TOKENIZER_FILE,
     default_model_dir,
     ensure_model_files,
+    ensure_tokenizer_file,
 )
 
 if TYPE_CHECKING:
@@ -165,13 +168,13 @@ def get_dimension() -> int:
 def get_model_name() -> str:
     """Return the configured Hugging Face model identifier."""
 
-    return settings.embedding_model_name
+    return MODEL_NAME
 
 
 def get_model_revision() -> str:
     """Return the immutable model revision used for remote loading."""
 
-    return settings.embedding_model_revision
+    return MODEL_REVISION
 
 
 def get_embedding_variant() -> str:
@@ -185,9 +188,8 @@ def get_tokenizer() -> Tokenizer:
 
     from tokenizers import Tokenizer
 
-    directory = ensure_model_files(
+    directory = ensure_tokenizer_file(
         model_dir(),
-        settings.embedding_variant,
         allow_download=not settings.embedding_offline,
     )
     return Tokenizer.from_file(str(directory / TOKENIZER_FILE.local_name))
