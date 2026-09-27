@@ -15,7 +15,7 @@ Cost-optimized serverless multilingual Retrieval-Augmented Generation (RAG) serv
 | Live deployment | [API health](https://serverless-rag-api.wonderfulforest-72b21477.japaneast.azurecontainerapps.io/health) · `dcaebb4` · revision `0000052`, 100% traffic |
 | Verification | **123 tests passed · 91.74% coverage** (2026-09-27) |
 | Runtime target | Application **0.5 vCPU / 1 GiB**; **1 vCPU / 2 GiB** including Datadog sidecar |
-| Retrieval benchmark | **96% / 98% Page Hit Rate@1 / @3 · MRR@10 0.966667** (2026-09-26) |
+| Retrieval benchmark | **96% / 98% Page Hit Rate@1 / Page Hit Rate@3 · MRR@10 0.966667** (2026-09-26) |
 | Cold start, released image | **21.255 s median** · 3 runs, 20.263–23.191 s (2026-09-27) |
 
 ---
@@ -90,7 +90,7 @@ Production RAG usually brings recurring embedding API costs, uneven retrieval ac
 | Embedding runtime | PyTorch fp32 | ONNX int8 |
 | Application + sidecar allocation | 1.5 vCPU / 3 GiB | 1 vCPU / 2 GiB (tested) |
 | Datadog | APM + DORA | APM + DORA + workflow, retrieval and LLM token traces |
-| Page Hit Rate@1 / @3 | 84% / 94% | **96% / 98%** |
+| Page Hit Rate@1 / Page Hit Rate@3 | 84% / 94% | **96% / 98%** |
 | MRR@10 | 0.900 | **0.966667** |
 | Cold start | ~60 s (historical) | **21.255 s median** (3 runs: 20.263–23.191 s) |
 
@@ -349,7 +349,7 @@ az containerapp ingress traffic set \
 | 向量化运行时 | PyTorch fp32 | ONNX int8 |
 | 应用 + 边车资源 | 1.5 vCPU / 3 GiB | 1 vCPU / 2 GiB（实测配置） |
 | Datadog | APM + DORA | 增加问答链路、检索与 LLM token 追踪 |
-| Page Hit Rate@1 / @3 | 84% / 94% | **96% / 98%** |
+| Page Hit Rate@1 / Page Hit Rate@3 | 84% / 94% | **96% / 98%** |
 | MRR@10 | 0.900 | **0.966667** |
 | 冷启动 | 约 60 秒（历史记录） | **中位数 21.255 秒**（3 轮：20.263–23.191 秒） |
 
@@ -608,7 +608,7 @@ az containerapp ingress traffic set \
 | Embedding ランタイム | PyTorch fp32 | ONNX int8 |
 | アプリ + サイドカーの割り当て | 1.5 vCPU / 3 GiB | 1 vCPU / 2 GiB（実測構成） |
 | Datadog | APM + DORA | ワークフロー・検索・LLM token のトレースを追加 |
-| Page Hit Rate@1 / @3 | 84% / 94% | **96% / 98%** |
+| Page Hit Rate@1 / Page Hit Rate@3 | 84% / 94% | **96% / 98%** |
 | MRR@10 | 0.900 | **0.966667** |
 | コールドスタート | 約 60 秒（過去の記録） | **中央値 21.255 秒**（3 回：20.263–23.191 秒） |
 
