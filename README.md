@@ -1,3 +1,5 @@
+https://github.com/user-attachments/assets/5fd4a136-c076-484d-83d8-d393c7a675e2
+
 # Serverless Multilingual RAG on Azure
 
 [![CI](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/ci.yml)
@@ -8,8 +10,6 @@
 Cost-optimized serverless multilingual Retrieval-Augmented Generation (RAG) service on Azure Container Apps: local multilingual embeddings on ONNX Runtime, Azure AI Search hybrid retrieval with semantic reranking, and OpenAI Structured Outputs — sized to run inside Azure's free tiers.
 
 [English](#english) | [中文](#中文) | [日本語](#日本語)
-
-**Project video:** [Watch the 30-second Japanese introduction](assets/videos/rag-launch-ja-30s.mp4) · Japanese narration · 1080p / 60 fps
 
 | 3.2.0 snapshot | Status |
 |---|---|
