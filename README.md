@@ -9,6 +9,8 @@ Cost-optimized serverless multilingual Retrieval-Augmented Generation (RAG) serv
 
 [English](#english) | [中文](#中文) | [日本語](#日本語)
 
+**Project video:** [Watch the 30-second Japanese introduction](assets/videos/rag-launch-ja-30s.mp4) · Japanese narration · 1080p / 60 fps
+
 | 3.2.0 snapshot | Status |
 |---|---|
 | Release | [v3.2.0](https://github.com/workHMZ/aca-ghcr-cicd-lab/releases/tag/v3.2.0) · Python 3.14.7 |
