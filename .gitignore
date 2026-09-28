@@ -10,6 +10,9 @@ data/
 private-notes/
 /docs/
 
+# Local video production files and review exports
+/artifacts/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
