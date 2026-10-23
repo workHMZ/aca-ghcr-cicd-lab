@@ -34,6 +34,11 @@ RUN python -m app.model_manifest --download "${EMBEDDING_MODEL_PATH}" --variant 
 
 FROM ${PYTHON_IMAGE} AS runtime
 
+# Apply Debian security fixes released after the pinned Python image was built.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends --only-upgrade libpcre2-8-0 perl-base \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependencies are installed in the builder. Do not ship unused installers
 # or ensurepip's bundled wheel with their separate vendored dependencies.
 RUN python -m pip uninstall --yes pip \
