@@ -73,7 +73,7 @@ class OnnxEmbedder:
             mask = attention_mask[..., None].astype(np.float32)
             pooled = (hidden * mask).sum(axis=1) / np.clip(mask.sum(axis=1), 1e-9, None)
             norms = np.clip(np.linalg.norm(pooled, axis=1, keepdims=True), 1e-12, None)
-            batches.append((pooled / norms).astype(np.float32))
+            batches.append((pooled / norms).astype(np.float32, copy=False))
         return np.vstack(batches)
 
 
@@ -132,7 +132,7 @@ def embed_text(text: str, *, input_type: InputType = "query") -> list[float]:
     if not text:
         return []
     vectors = _get_embedder().encode([_prefixed(text, input_type)], batch_size=1)
-    return [float(value) for value in vectors[0]]
+    return vectors[0].tolist()  # type: ignore[no-any-return]
 
 
 def embed_batch(texts: list[str], *, input_type: InputType = "passage") -> list[list[float]]:
@@ -144,7 +144,7 @@ def embed_batch(texts: list[str], *, input_type: InputType = "passage") -> list[
         [_prefixed(text, input_type) for text in texts],
         batch_size=settings.embedding_batch_size,
     )
-    return [[float(value) for value in vector] for vector in vectors]
+    return vectors.tolist()  # type: ignore[no-any-return]
 
 
 def embed_query(text: str) -> list[float]:

@@ -5,17 +5,17 @@ https://github.com/user-attachments/assets/5fd4a136-c076-484d-83d8-d393c7a675e2
 [![CI](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/ci.yml)
 [![Security](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/security.yml/badge.svg)](https://github.com/workHMZ/aca-ghcr-cicd-lab/actions/workflows/security.yml)
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB.svg)](https://www.python.org/)
-[![Version 3.2.0](https://img.shields.io/badge/version-3.2.0-6f42c1.svg)](#configuration-reference)
+[![Version 3.2.1](https://img.shields.io/badge/version-3.2.1-6f42c1.svg)](#configuration-reference)
 
 Cost-optimized serverless multilingual Retrieval-Augmented Generation (RAG) service on Azure Container Apps: local multilingual embeddings on ONNX Runtime, Azure AI Search hybrid retrieval with semantic reranking, and OpenAI Structured Outputs — sized to run inside Azure's free tiers.
 
 [English](#english) | [中文](#中文) | [日本語](#日本語)
 
-| 3.2.0 snapshot | Status |
+| 3.2.1 snapshot | Status |
 |---|---|
-| Release | [v3.2.0](https://github.com/workHMZ/aca-ghcr-cicd-lab/releases/tag/v3.2.0) · Python 3.14.7 |
+| Release | [v3.2.1](https://github.com/workHMZ/aca-ghcr-cicd-lab/releases/tag/v3.2.1) · Python 3.14.10 |
 | Deployment | Azure Container Apps · Japan East · v3.2.0 (verified 2026-09-27) |
-| Verification | **123 tests passed · 91.74% coverage** (2026-09-27) |
+| Verification | **125 tests passed · 91.78% coverage** (2026-11-12) |
 | Runtime target | Application **0.5 vCPU / 1 GiB**; **1 vCPU / 2 GiB** including Datadog sidecar |
 | Retrieval benchmark | **96% / 98% Page Hit Rate@1 / Page Hit Rate@3 · MRR@10 0.966667** (2026-09-26) |
 | Cold start, initial 3.2 image | **21.255 s median** · 3 runs, 20.263–23.191 s (2026-09-27) |

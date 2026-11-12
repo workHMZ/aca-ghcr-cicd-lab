@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -56,7 +57,7 @@ def test_root_and_health_expose_reproducible_metadata(client: TestClient) -> Non
     health = client.get("/health")
 
     assert root.status_code == 200
-    assert root.json()["version"] == "3.2.0"
+    assert root.json()["version"] == "3.2.1"
     assert root.json()["embedding_model"] == "intfloat/multilingual-e5-small"
     assert root.json()["embedding_variant"] == "onnx-qint8"
     assert root.json()["embedding_dimension"] == 384
@@ -563,3 +564,17 @@ async def test_answer_with_mixed_valid_and_invalid_citations_is_rejected(monkeyp
     assert answer.startswith("申し訳")
     assert metadata.grounded is False
     assert metadata.citations == []
+
+
+def test_log_correlation_never_imports_ddtrace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "ddtrace", raising=False)
+
+    assert main._safe_get_dd_correlation() == {}
+    assert "ddtrace" not in sys.modules
+
+
+def test_log_correlation_uses_an_already_loaded_tracer(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracer = SimpleNamespace(get_log_correlation_context=lambda: {"trace_id": 7, "span_id": 9, "env": ""})
+    monkeypatch.setitem(sys.modules, "ddtrace", SimpleNamespace(tracer=tracer))
+
+    assert main._safe_get_dd_correlation() == {"dd.trace_id": "7", "dd.span_id": "9"}

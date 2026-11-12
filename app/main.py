@@ -39,9 +39,12 @@ SERVICE_NAME = settings.service_name
 
 
 def _safe_get_dd_correlation() -> dict[str, str]:
+    # Only correlate when ddtrace-run already loaded the tracer. Importing it
+    # here would pull ddtrace into the untraced process on its first log line.
+    ddtrace = sys.modules.get("ddtrace")
+    if ddtrace is None:
+        return {}
     try:
-        import ddtrace
-
         tracer = getattr(ddtrace, "tracer", None)
         if tracer is None:
             return {}
@@ -507,7 +510,7 @@ async def _generate_answer(
         model=getattr(response, "model", None),
         response_id=getattr(response, "id", None),
         status=status,
-        usage=_usage_metadata(response),
+        usage=usage,
     )
     if status == "incomplete":
         reason = getattr(getattr(response, "incomplete_details", None), "reason", "unknown")

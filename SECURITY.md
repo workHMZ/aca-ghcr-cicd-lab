@@ -2,7 +2,7 @@
 
 ## Supported version
 
-This checkout is version `3.2.0`. Security fixes target the latest maintained `3.x`
+This checkout is version `3.2.1`. Security fixes target the latest maintained `3.x`
 release; older interview-lab releases are retained for learning and are not supported.
 
 ## Reporting a vulnerability
