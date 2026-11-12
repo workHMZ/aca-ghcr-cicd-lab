@@ -14,7 +14,7 @@ Cost-optimized serverless multilingual Retrieval-Augmented Generation (RAG) serv
 | 3.2.1 snapshot | Status |
 |---|---|
 | Release | [v3.2.1](https://github.com/workHMZ/aca-ghcr-cicd-lab/releases/tag/v3.2.1) · Python 3.14.10 |
-| Deployment | Azure Container Apps · Japan East · v3.2.0 (verified 2026-09-27) |
+| Deployment | Azure Container Apps · Japan East · v3.2.1 (verified 2026-11-12) |
 | Verification | **125 tests passed · 91.78% coverage** (2026-11-12) |
 | Runtime target | Application **0.5 vCPU / 1 GiB**; **1 vCPU / 2 GiB** including Datadog sidecar |
 | Retrieval benchmark | **96% / 98% Page Hit Rate@1 / Page Hit Rate@3 · MRR@10 0.966667** (2026-09-26) |
