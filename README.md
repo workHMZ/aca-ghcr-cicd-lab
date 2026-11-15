@@ -1,4 +1,4 @@
-https://github.com/user-attachments/assets/5fd4a136-c076-484d-83d8-d393c7a675e2
+https://github.com/user-attachments/assets/9f8eba90-27e7-4d21-a647-44e635995587
 
 # Serverless Multilingual RAG on Azure
 
