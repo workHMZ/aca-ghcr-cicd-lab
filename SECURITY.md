@@ -1,40 +1,26 @@
-# Security policy
+# Security Policy
 
-## Supported version
+## Supported Versions
 
-This checkout is version `3.2.1`. Security fixes target the latest maintained `3.x`
-release; older interview-lab releases are retained for learning and are not supported.
+This repository is at release `3.2.1`. Security fixes apply to the active `3.2.x` line on `main`; earlier tags remain archived as historical lab snapshots without backported patches.
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
-Please use [GitHub private vulnerability reporting](https://github.com/workHMZ/aca-ghcr-cicd-lab/security/advisories/new). Do not open a public issue with credentials, exploit payloads, private document content, tenant identifiers, or non-public resource details.
+Report suspected vulnerabilities privately through [GitHub Security Advisories](https://github.com/workHMZ/aca-ghcr-cicd-lab/security/advisories/new). Keep credentials, exploit payloads, non-public corpus files, tenant identifiers, and raw cloud logs out of public issues and pull requests.
 
-Include the affected version or commit, reproduction steps, impact, and a suggested mitigation if available. The maintainer will acknowledge a report as soon as practical and coordinate disclosure after a fix is ready.
+Include the affected release tag or commit SHA, minimal reproduction steps, security impact, and any proposed mitigation. Reports are acknowledged promptly and disclosed after a verified fix is deployed.
 
-## Current trust boundary
+## Trust Boundaries & Runtime Controls
 
-This repository is an interview and learning project, not a hosted multi-tenant product.
+`aca-ghcr-cicd-lab` operates a public single-replica RAG service within Azure's free consumption tiers. Its security model relies on explicit boundaries across five layers:
 
-- The FastAPI ingress is public unless authentication is configured outside the app. Do not ingest confidential documents into a public deployment.
-- Retrieved text is untrusted data. The generation prompt isolates it as context, but prompt injection cannot be eliminated by prompting alone.
-- Request length and `top_k` are bounded, and uncached queries are capped per minute and per UTC day
-  (`QUERY_RATE_LIMIT_PER_MINUTE`, `QUERY_DAILY_LIMIT`) to bound OpenAI and semantic-ranker spend on the
-  anonymous endpoint. The budget is in-process (per replica); production deployments should add
-  identity-aware access, a shared/edge rate limiter, and abuse monitoring.
-- Azure AI Search and OpenAI credentials are injected as secrets and must never be committed. Rotate a credential immediately if it is exposed.
-- A query sends the user's question and retrieved chunks to OpenAI for generation, even with
-  `store=false`. The API response also returns full retrieved chunk text to the caller. Corpus
-  owners must treat both paths as deliberate data-disclosure boundaries.
-- GitHub Actions uses Azure OIDC with a federated subject bound to the intended repository and environment. Configure and verify that trust before the first 3.2 deployment; retain legacy credentials until migration and rollback are verified.
-- Serving and retrieval evaluation require a read-only Search query key. Only operator-run index management and ingestion use an admin key.
-- Terraform state can contain sensitive infrastructure data. Use the declared Azure Storage backend with access control, encryption, locking, and a reviewed retention policy; never commit state or private variables.
-- Datadog LLM spans contain operational metadata and token counts, not questions, answers, document text, or raw exception messages. The entrypoint disables automatic OpenAI content capture; the Datadog key stays in the Agent sidecar.
-- PDF ingestion processes untrusted files. Run ingestion in an isolated environment, keep `pypdf` patched, and enforce file-size/page/time limits before exposing uploads to users.
-  Ingestion is an operator-only CLI (`pypdf` is not in the serving image); use `--glob` to select
-  exactly the public documents, because everything ingested is returned verbatim by the public API.
-- The embedding model is downloaded from an immutable Hugging Face revision and every file is
-  checked against a pinned SHA-256 (`app/model_manifest.py`) before it enters the image.
+- **Public ingress & spend guardrails**: The FastAPI endpoint accepts anonymous traffic unless an external gateway enforces authentication. Input length and `top_k` are strictly bounded, while an in-process `3600 s` TTL answer cache and per-replica `QUERY_RATE_LIMIT_PER_MINUTE` and `QUERY_DAILY_LIMIT` budgets cap uncached Azure AI Search semantic queries and OpenAI calls. Cache bypass via `X-Canary-Token` requires constant-time verification against `CANARY_CACHE_BYPASS_TOKEN`. Multi-replica or multi-tenant deployments should add identity-aware access control and a shared edge rate limiter.
+- **Data disclosure & untrusted evidence**: Every indexed chunk can be returned verbatim in API citations and transmitted alongside the user question to OpenAI with `store=false`. Operators must treat the search index as a public disclosure boundary and scope `scripts/ingest.py` explicitly with `--glob` over approved public documents. At query time, retrieved chunks are wrapped inside an untrusted-data boundary, semantic ranking fails closed on missing scores or HTTP `402` quota exhaustion, hits below `SEARCH_MIN_RERANKER_SCORE` abort before LLM generation, chunks with mismatched `embeddingModel`, `embeddingRevision`, or `embeddingVariant` are rejected, and returned citation indices are validated against retained context bounds.
+- **Least-privilege credentials & state isolation**: Online serving and `scripts/evaluate_retrieval.py` authenticate to Azure AI Search exclusively with a read-only `AZURE_SEARCH_QUERY_KEY`; `AZURE_SEARCH_ADMIN_KEY` is reserved for offline operator CLIs `create_index.py`, `ingest.py`, and `clear_index.py`. GitHub Actions authenticates to Azure through short-lived OIDC federated credentials scoped to this repository and the `stg` environment. Secrets are injected at runtime and rotated immediately upon suspected exposure. Terraform state must reside in an access-controlled, encrypted Azure Storage backend with state locking and must never be committed.
+- **Metadata-only observability**: When the optional Datadog Agent sidecar is enabled, `app/telemetry.py` exports stage latency, chunk counts, reranker score bounds, and token usage over `127.0.0.1:8126` while keeping `DD_TRACE_OPENAI_ENABLED=false` and agentless export disabled. User questions, generated answers, corpus text, and raw exception strings are excluded from trace attributes, and the Datadog API key remains isolated inside the sidecar container.
+- **Offline ingestion & container hardening**: PDF parsing via `pypdf` stays restricted to operator CLI tooling and is excluded from the production container image; run ingestion in an isolated environment over vetted inputs. During image build, `app/model_manifest.py` downloads tokenizer and ONNX weights from a pinned Hugging Face commit and verifies every file against hardcoded SHA-256 digests. The runtime stage starts from a digest-pinned Debian Bookworm Python image, strips `pip` and `ensurepip`, runs as non-root UID/GID `10001`, and enforces `EMBEDDING_OFFLINE=1`.
 
-## Dependency and image controls
+## Supply Chain & Continuous Verification
 
-The local quality gate audits locked Python runtime dependencies. CI scans the exact image digest, produces an SBOM, signs the digest with Cosign, and CD verifies that signature before a canary rollout. A valid signature proves provenance, not the absence of application vulnerabilities.
+- **Static, dependency, and IaC gates**: `scripts/verify.sh` audits the locked runtime dependency graph via `pip-audit`. `.github/workflows/security.yml` runs CodeQL analysis over Python and GitHub Actions workflows alongside Trivy `HIGH/CRITICAL` gates covering filesystem dependencies, Terraform configuration, committed secrets, and the built container image.
+- **Air-gapped smoke & cryptographic provenance**: `.github/workflows/ci.yml` verifies container startup and memory bounds under `--network none` via `scripts/smoke_container.sh`, scans the pushed `sha256` image digest with Trivy, attaches a Syft CycloneDX SBOM attestation, and signs the immutable digest keyless with Cosign as the final CI step. `.github/workflows/cd.yml` verifies both the Cosign signature and SBOM attestation against the exact CI workflow identity, `refs/heads/main`, and commit SHA before deploying a `0%`-traffic canary revision.
